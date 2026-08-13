@@ -17,6 +17,7 @@
         <button type="button" data-page="dashboard" class="is-active">대시보드</button>
         <button type="button" data-page="users">회원</button>
         <button type="button" data-page="stories">스토리</button>
+        <button type="button" data-page="comments">댓글</button>
         <button type="button" data-page="chat">채팅</button>
         <button type="button" data-page="banned">금칙어</button>
       </nav>
@@ -97,6 +98,7 @@
                 <th>가입 일</th>
                 <th>회원 형태</th>
                 <th>회원 상태</th>
+                <th>관리</th>
               </tr>
             </thead>
             <tbody id="users-body"></tbody>
@@ -116,6 +118,27 @@
             </thead>
             <tbody id="stories-body"></tbody>
           </table>
+        </div>
+      </section>
+
+      <section id="page-comments" class="page is-hidden">
+        <div class="toolbar">
+          <button type="button" id="btn-comments-reload">새로고침</button>
+        </div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>작성자</th>
+                <th>내용</th>
+                <th>스토리</th>
+                <th>작성일</th>
+              </tr>
+            </thead>
+            <tbody id="comments-body"></tbody>
+          </table>
+          <p class="empty" id="comments-empty" hidden>댓글이 없습니다.</p>
         </div>
       </section>
 
@@ -162,6 +185,33 @@
         </div>
       </section>
     </main>
+  </div>
+
+  <div id="suspend-modal" class="modal" hidden aria-hidden="true">
+    <div class="modal__card" role="dialog" aria-modal="true" aria-labelledby="suspend-modal-title">
+      <h2 id="suspend-modal-title">계정 정지</h2>
+      <p class="muted" id="suspend-modal-target">—</p>
+      <label class="field">
+        <span>정지 사유</span>
+        <input id="suspend-reason" type="text" maxlength="255" placeholder="정지 사유를 입력하세요" autocomplete="off" />
+      </label>
+      <div class="field">
+        <span>정지 기간</span>
+        <div class="seg seg--wrap" id="suspend-period" role="group" aria-label="정지 기간">
+          <button type="button" data-days="1" class="is-active">1일</button>
+          <button type="button" data-days="7">7일</button>
+          <button type="button" data-days="30">30일</button>
+          <button type="button" data-days="permanent">영구</button>
+          <button type="button" data-days="custom">직접 지정</button>
+        </div>
+        <input id="suspend-until" type="datetime-local" class="is-hidden" />
+      </div>
+      <p class="form-error" id="suspend-error" hidden></p>
+      <div class="modal__actions">
+        <button type="button" class="ghost-btn" id="btn-suspend-cancel">취소</button>
+        <button type="button" class="danger" id="btn-suspend-confirm">정지하기</button>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="/app-page.js"></script>

@@ -16,6 +16,7 @@ const titles = {
   dashboard: ["대시보드", "사이트 수입 정보"],
   users: ["회원", "회원 리스트 정보"],
   stories: ["스토리", "콘텐츠 목록"],
+  comments: ["댓글", "댓글 목록"],
   chat: ["채팅", "대화 모니터링 · 관리자 메모"],
   banned: ["금칙어", "금칙어 관리"],
 };
@@ -26,6 +27,8 @@ let selectedChatRoomId = "";
 let chatRoomsCache = [];
 let revenueGroupBy = "day";
 let lastRevenuePeriods = [];
+let suspendTarget = null;
+let suspendPeriod = "1";
 const CHAT_NOTES_KEY = "planwith_bo_chat_notes";
 
 function formatJoinDate(value) {
@@ -70,13 +73,13 @@ async function api(path, options = {}) {
   if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch(path, { ...options, headers });
-  if (res.status === 401 || res.status === 403) {
+  const json = await res.json().catch(() => null);
+  if (res.status === 401) {
     sessionStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(NAME_KEY);
     window.location.replace("/");
     throw new Error("로그인이 필요합니다. 다시 로그인해 주세요.");
   }
-  const json = await res.json().catch(() => null);
   if (!res.ok || json?.success === false) {
     throw new Error(json?.message || json?.error?.message || `요청 실패 (${res.status})`);
   }
@@ -95,8 +98,159 @@ function setPage(page) {
   if (page === "dashboard") loadDashboard();
   if (page === "users") loadUsers();
   if (page === "stories") loadStories();
+  if (page === "comments") loadComments();
   if (page === "chat") loadChat();
   if (page === "banned") loadBanned();
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function formatDateTime(value) {
+  if (!value) return "영구";
+  const s = String(value);
+  return s.length >= 16 ? s.slice(0, 16).replace("T", " ") : s;
+}
+
+function toLocalDateTimeParam(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function resolveSuspendedUntil() {
+  if (suspendPeriod === "permanent") return null;
+  if (suspendPeriod === "custom") {
+    const raw = document.getElementById("suspend-until")?.value;
+    if (!raw) return undefined;
+    return toLocalDateTimeParam(new Date(raw));
+  }
+  const days = Number(suspendPeriod);
+  if (!Number.isFinite(days) || days <= 0) return null;
+  const until = new Date();
+  until.setDate(until.getDate() + days);
+  return toLocalDateTimeParam(until);
+}
+
+function userApiKey(user) {
+  return user?.memberUuid || user?.id || (user?.memberNo != null ? String(user.memberNo) : "");
+}
+
+function showSuspendError(msg) {
+  const err = document.getElementById("suspend-error");
+  if (!err) return;
+  err.textContent = msg || "";
+  err.hidden = !msg;
+}
+
+function openSuspendModal(user) {
+  suspendTarget = user;
+  suspendPeriod = "1";
+  const modal = document.getElementById("suspend-modal");
+  const reason = document.getElementById("suspend-reason");
+  const until = document.getElementById("suspend-until");
+  const confirmBtn = document.getElementById("btn-suspend-confirm");
+  showSuspendError("");
+  if (reason) reason.value = "";
+  if (until) {
+    until.value = "";
+    until.classList.add("is-hidden");
+  }
+  if (confirmBtn) confirmBtn.disabled = false;
+  document.querySelectorAll("#suspend-period button").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.days === "1");
+  });
+  const target = document.getElementById("suspend-modal-target");
+  if (target) {
+    target.textContent = `${user.nickname || "회원"} · 회원번호 ${user.memberNo ?? "—"}`;
+  }
+  if (modal) {
+    modal.hidden = false;
+    modal.classList.add("is-open");
+    modal.setAttribute("aria-hidden", "false");
+  }
+  reason?.focus();
+}
+
+function closeSuspendModal() {
+  suspendTarget = null;
+  const modal = document.getElementById("suspend-modal");
+  if (modal) {
+    modal.classList.remove("is-open");
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+  }
+  showSuspendError("");
+}
+
+async function confirmSuspend() {
+  const memberNo = suspendTarget?.memberNo != null ? Number(suspendTarget.memberNo) : null;
+  const memberUuid = suspendTarget?.memberUuid || suspendTarget?.id || null;
+  if (memberNo == null && !memberUuid) {
+    showSuspendError("대상 회원을 찾을 수 없습니다. 목록을 새로고침해 주세요.");
+    return;
+  }
+  const reason = (document.getElementById("suspend-reason")?.value || "").trim();
+  if (!reason) {
+    showSuspendError("정지 사유를 입력해주세요.");
+    document.getElementById("suspend-reason")?.focus();
+    return;
+  }
+  const suspendedUntil = resolveSuspendedUntil();
+  if (suspendedUntil === undefined) {
+    showSuspendError("정지 종료 일시를 선택해주세요.");
+    return;
+  }
+  const confirmBtn = document.getElementById("btn-suspend-confirm");
+  if (confirmBtn) confirmBtn.disabled = true;
+  showSuspendError("");
+  try {
+    const payload = {
+      memberNo: Number.isFinite(memberNo) ? memberNo : null,
+      memberUuid: memberUuid || null,
+      reason,
+    };
+    if (suspendedUntil) payload.suspendedUntil = suspendedUntil;
+    await api("/api/admin/users/suspend", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    closeSuspendModal();
+    const statusEl = document.getElementById("users-status");
+    if (statusEl) {
+      statusEl.textContent = "계정을 정지했습니다. 해당 회원은 로그인·이용이 제한됩니다.";
+      statusEl.style.color = "var(--ok)";
+    }
+    await loadUsers();
+  } catch (ex) {
+    showSuspendError(ex.message || "계정 정지에 실패했습니다.");
+    if (confirmBtn) confirmBtn.disabled = false;
+  }
+}
+
+function renderUserActions(u) {
+  const st = String(u.status || "").toUpperCase();
+  const key = escapeHtml(userApiKey(u));
+  const memberNo = u.memberNo != null ? String(u.memberNo) : "";
+  if (st === "ACTIVE" || !st) {
+    return `<div class="row-actions">
+      <button type="button" class="danger btn-suspend" data-action="suspend" data-key="${key}" data-member-no="${escapeHtml(memberNo)}">계정 정지</button>
+    </div>`;
+  }
+  if (st === "SUSPENDED") {
+    const untilLabel = u.suspendedUntil == null ? "영구" : formatDateTime(u.suspendedUntil);
+    const reason = u.suspendReason ? `<div class="muted tiny">사유: ${escapeHtml(u.suspendReason)}</div>` : "";
+    return `<div class="row-actions row-actions--stack">
+      <button type="button" class="ghost btn-unsuspend" data-action="unsuspend" data-key="${key}" data-member-no="${escapeHtml(memberNo)}">정지 해제</button>
+      <div class="muted tiny">만료: ${escapeHtml(untilLabel)}</div>
+      ${reason}
+    </div>`;
+  }
+  return `<span class="muted">—</span>`;
 }
 
 function groupCaption(group) {
@@ -305,19 +459,63 @@ async function loadUsers() {
   rows.forEach((u) => {
     const tr = document.createElement("tr");
     const st = u.status;
+    const userPayload = {
+      memberUuid: u.memberUuid || u.id || null,
+      memberNo: u.memberNo,
+      nickname: u.nickname,
+      status: u.status,
+    };
+    tr.dataset.user = JSON.stringify(userPayload);
     tr.innerHTML = `
       <td>${u.memberNo ?? "—"}</td>
-      <td>${u.nickname ?? "—"}</td>
-      <td>${u.email ?? "—"}</td>
-      <td><span class="badge">${u.gradeName ?? "—"}</span></td>
+      <td>${escapeHtml(u.nickname) || "—"}</td>
+      <td>${escapeHtml(u.email) || "—"}</td>
+      <td><span class="badge">${escapeHtml(u.gradeName) || "—"}</span></td>
       <td>${formatJoinDate(u.createdAt)}</td>
       <td>${labelMemberType(u.memberType, u.loginType)}</td>
-      <td><span class="badge ${statusBadgeClass(st)}">${labelMemberStatus(st)}</span></td>`;
+      <td><span class="badge ${statusBadgeClass(st)}">${labelMemberStatus(st)}</span></td>
+      <td>${renderUserActions({ ...u, ...userPayload })}</td>`;
     body.appendChild(tr);
   });
   if (statusEl) {
     statusEl.textContent = `회원 리스트를 불러왔습니다. (${rows.length}명)`;
     statusEl.style.color = "var(--ok)";
+  }
+}
+
+async function loadComments() {
+  const body = document.getElementById("comments-body");
+  const empty = document.getElementById("comments-empty");
+  if (body) body.innerHTML = "";
+  if (empty) {
+    empty.hidden = true;
+    empty.textContent = "댓글이 없습니다.";
+  }
+  try {
+    const page = await api("/api/admin/comments?page=0&size=50");
+    const list = page?.content || page || [];
+    if (!list.length) {
+      if (empty) empty.hidden = false;
+      else if (body) body.innerHTML = `<tr><td colspan="5" class="empty">댓글이 없습니다.</td></tr>`;
+      return;
+    }
+    list.forEach((c) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${c.id ?? "—"}</td>
+        <td>${escapeHtml(c.authorNickname) || "—"}</td>
+        <td>${escapeHtml(c.content) || "—"}</td>
+        <td>${escapeHtml(c.storyTitle) || "—"}</td>
+        <td>${c.createdAt ? String(c.createdAt).slice(0, 10) : "—"}</td>`;
+      body.appendChild(tr);
+    });
+  } catch (ex) {
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = ex.message || "댓글을 불러오지 못했습니다.";
+    } else if (body) {
+      body.innerHTML = `<tr><td colspan="5" class="empty">${ex.message || "댓글을 불러오지 못했습니다."}</td></tr>`;
+    }
   }
 }
 
@@ -496,8 +694,102 @@ window.addEventListener("resize", () => {
 });
 document.getElementById("btn-users-reload")?.addEventListener("click", loadUsers);
 document.getElementById("btn-stories-reload")?.addEventListener("click", loadStories);
+document.getElementById("btn-comments-reload")?.addEventListener("click", loadComments);
 document.getElementById("btn-banned-reload")?.addEventListener("click", loadBanned);
 document.getElementById("btn-chat-reload")?.addEventListener("click", loadChat);
+
+document.getElementById("page-users")?.addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-action]");
+  if (!btn || !document.getElementById("users-body")?.contains(btn)) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  const tr = btn.closest("tr");
+  let user = {};
+  try {
+    user = JSON.parse(tr?.dataset.user || "{}");
+  } catch {
+    user = {};
+  }
+  const key = btn.dataset.key || userApiKey(user) || btn.dataset.memberNo || "";
+  if (!key) {
+    const statusEl = document.getElementById("users-status");
+    if (statusEl) {
+      statusEl.textContent = "회원 식별값이 없어 처리할 수 없습니다. 목록을 새로고침해 주세요.";
+      statusEl.style.color = "var(--danger)";
+    }
+    return;
+  }
+  user.memberUuid = user.memberUuid || user.id || null;
+  user.memberNo = user.memberNo ?? btn.dataset.memberNo ?? null;
+
+  if (btn.dataset.action === "suspend") {
+    openSuspendModal({
+      ...user,
+      memberNo: user.memberNo ?? btn.dataset.memberNo ?? null,
+      memberUuid: user.memberUuid || user.id || null,
+    });
+    return;
+  }
+  if (btn.dataset.action === "unsuspend") {
+    const memberNo = user.memberNo != null ? Number(user.memberNo) : Number(btn.dataset.memberNo);
+    const memberUuid = user.memberUuid || user.id || null;
+    try {
+      await api("/api/admin/users/unsuspend", {
+        method: "POST",
+        body: JSON.stringify({
+          memberNo: Number.isFinite(memberNo) ? memberNo : null,
+          memberUuid: memberUuid || null,
+        }),
+      });
+      loadUsers();
+    } catch (ex) {
+      const statusEl = document.getElementById("users-status");
+      if (statusEl) {
+        statusEl.textContent = ex.message || "정지 해제에 실패했습니다.";
+        statusEl.style.color = "var(--danger)";
+      }
+    }
+  }
+});
+
+document.getElementById("btn-suspend-cancel")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  closeSuspendModal();
+});
+
+document.getElementById("btn-suspend-confirm")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  confirmSuspend();
+});
+
+document.getElementById("suspend-modal")?.addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeSuspendModal();
+});
+
+document.getElementById("suspend-period")?.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-days]");
+  if (!btn) return;
+  e.preventDefault();
+  suspendPeriod = btn.dataset.days;
+  document.querySelectorAll("#suspend-period button").forEach((b) => {
+    b.classList.toggle("is-active", b === btn);
+  });
+  const until = document.getElementById("suspend-until");
+  if (until) {
+    if (suspendPeriod === "custom") {
+      until.classList.remove("is-hidden");
+      if (!until.value) {
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        until.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      }
+    } else {
+      until.classList.add("is-hidden");
+    }
+  }
+});
 document.getElementById("chat-room-q")?.addEventListener("input", renderChatRooms);
 document.getElementById("chat-room-list")?.addEventListener("click", (e) => {
   const btn = e.target.closest(".chat-room");
