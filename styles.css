@@ -251,6 +251,86 @@ button, input {
   margin-bottom: 16px;
 }
 
+.stats--revenue .stat strong {
+  font-size: 22px;
+}
+
+.dash-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.dash-head h2 {
+  margin-bottom: 4px;
+}
+
+.dash-chart__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.dash-chart__head h2 {
+  margin: 0;
+}
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f7f9fb;
+}
+
+.seg button {
+  border: 0;
+  background: transparent;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.seg button + button {
+  border-left: 1px solid var(--line);
+}
+
+.seg button.is-active {
+  background: var(--side);
+  color: #fff;
+}
+
+.chart-wrap {
+  position: relative;
+  margin-top: 10px;
+  min-height: 280px;
+}
+
+.chart-wrap canvas {
+  width: 100%;
+  height: 280px;
+  display: block;
+}
+
+.chart-wrap .empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  pointer-events: none;
+}
+
+@media (max-width: 1100px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 .stat, .panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -299,6 +379,15 @@ button, input {
 }
 
 .toolbar input { max-width: 320px; }
+
+.toolbar--filters select {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  font-size: 13px;
+  min-width: 140px;
+}
 
 .grade-bar {
   display: flex;

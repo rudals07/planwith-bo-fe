@@ -1,5 +1,4 @@
 const TOKEN_KEY = "planwith_bo_token";
-const DEMO_KEY = "planwith_bo_demo";
 const NAME_KEY = "planwith_bo_name";
 
 const errEl = document.getElementById("login-error");
@@ -15,7 +14,6 @@ function goApp() {
   window.location.replace("/app.html");
 }
 
-// 이미 로그인돼 있으면 바로 이동
 if (sessionStorage.getItem(TOKEN_KEY)) {
   goApp();
 }
@@ -53,25 +51,12 @@ form.addEventListener("submit", async (e) => {
   try {
     const token = await loginApi(adminId, password);
     sessionStorage.setItem(TOKEN_KEY, token);
-    sessionStorage.removeItem(DEMO_KEY);
     sessionStorage.setItem(NAME_KEY, adminId);
     goApp();
   } catch (ex) {
-    // 연결 실패면 데모 진입 제안, 그 외는 에러 표시
     const network = String(ex.message || "").includes("Failed to fetch") || ex.name === "TypeError";
-    if (network) {
-      setError("BO API(8081) 연결 실패. 아래 데모 버튼을 사용하세요.");
-    } else {
-      setError(ex.message || "로그인 실패");
-    }
+    setError(network ? "BO API(8081) 연결 실패. planwith-bo-management를 실행하세요." : ex.message || "로그인 실패");
     btn.disabled = false;
     btn.textContent = "로그인";
   }
-});
-
-document.getElementById("btn-demo").addEventListener("click", () => {
-  sessionStorage.setItem(TOKEN_KEY, "demo-token");
-  sessionStorage.setItem(DEMO_KEY, "1");
-  sessionStorage.setItem(NAME_KEY, "demo-admin");
-  goApp();
 });

@@ -10,4 +10,4 @@ npm install
 npm run dev
 ```
 
-BE가 없어도 로그인 후 데모 모드로 화면을 확인할 수 있습니다.
+로그인·목록은 `planwith-bo-management`(8081) + FO MySQL이 필요합니다.
