@@ -1,0 +1,13 @@
+{
+  "name": "planwith-bo-fe",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host localhost --port 5174",
+    "preview": "vite preview --host localhost --port 5174"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5"
+  }
+}

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PlanWith Admin</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="side">
+      <div class="side__brand">
+        <strong>PlanWith</strong>
+        <span>BO</span>
+      </div>
+      <nav class="side__nav">
+        <button type="button" data-page="dashboard" class="is-active">대시보드</button>
+        <button type="button" data-page="users">회원</button>
+        <button type="button" data-page="stories">스토리</button>
+        <button type="button" data-page="chat">채팅</button>
+        <button type="button" data-page="banned">금칙어</button>
+      </nav>
+      <div class="side__foot">
+        <p id="admin-name">admin</p>
+        <button type="button" id="btn-logout">로그아웃</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="top">
+        <h1 id="page-title">대시보드</h1>
+        <p id="page-sub" class="muted">요약 현황</p>
+      </header>
+
+      <section id="page-dashboard" class="page">
+        <div class="stats">
+          <article class="stat"><span>오늘 매출</span><strong id="stat-today">—</strong></article>
+          <article class="stat"><span>이번 달</span><strong id="stat-month">—</strong></article>
+          <article class="stat"><span>누적</span><strong id="stat-total">—</strong></article>
+          <article class="stat"><span>연결</span><strong id="stat-api">확인 중</strong></article>
+        </div>
+        <div class="panel">
+          <h2>안내</h2>
+          <ul class="bullets">
+            <li>좌측 메뉴에서 회원·스토리·금칙어를 관리합니다.</li>
+            <li>API가 없으면 샘플 데이터로 표시됩니다.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="page-users" class="page is-hidden">
+        <div class="grade-bar" id="grade-bar" aria-label="등급 필터"></div>
+        <div class="toolbar">
+          <input id="user-q" type="search" placeholder="닉네임/이메일 검색" />
+          <button type="button" id="btn-users-reload">새로고침</button>
+        </div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr><th>ID</th><th>닉네임</th><th>이메일</th><th>등급</th><th>상태</th><th>가입일</th></tr>
+            </thead>
+            <tbody id="users-body"></tbody>
+          </table>
+          <p class="empty" id="users-empty" hidden>해당 등급 회원이 없습니다.</p>
+        </div>
+      </section>
+
+      <section id="page-stories" class="page is-hidden">
+        <div class="toolbar">
+          <button type="button" id="btn-stories-reload">새로고침</button>
+        </div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr><th>ID</th><th>작성자</th><th>미리보기</th><th>상태</th><th>작성일</th></tr>
+            </thead>
+            <tbody id="stories-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="page-chat" class="page is-hidden">
+        <div class="chat-layout">
+          <aside class="chat-rooms panel">
+            <div class="chat-rooms__head">
+              <h2>대화 목록</h2>
+              <button type="button" id="btn-chat-reload" class="ghost-btn">새로고침</button>
+            </div>
+            <input id="chat-room-q" type="search" placeholder="닉네임/방 검색" />
+            <div id="chat-room-list" class="chat-room-list"></div>
+          </aside>
+          <div class="chat-thread panel">
+            <div class="chat-thread__head">
+              <div>
+                <h2 id="chat-room-title">대화를 선택하세요</h2>
+                <p class="muted" id="chat-room-meta">신고/모니터링용 미리보기</p>
+              </div>
+              <span class="badge" id="chat-room-status">—</span>
+            </div>
+            <div id="chat-messages" class="chat-messages"></div>
+            <form id="form-chat-note" class="chat-note" hidden>
+              <input name="note" type="text" placeholder="관리자 메모 남기기 (로컬 저장)" maxlength="200" />
+              <button type="submit">메모</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-banned" class="page is-hidden">
+        <form id="form-banned" class="toolbar">
+          <input name="word" type="text" placeholder="금칙어 추가" required />
+          <button type="submit">추가</button>
+          <button type="button" id="btn-banned-reload">새로고침</button>
+        </form>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr><th>ID</th><th>단어</th><th></th></tr>
+            </thead>
+            <tbody id="banned-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/app-page.js"></script>
+</body>
+</html>

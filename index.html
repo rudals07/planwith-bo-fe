@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PlanWith Admin Login</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="login">
+    <div class="login__panel">
+      <p class="login__brand">PLAN &amp; WITH</p>
+      <h1 class="login__title">Admin</h1>
+      <p class="login__sub">백오피스 관리자 로그인</p>
+
+      <form id="form-login" class="login__form">
+        <label>
+          <span>관리자 ID</span>
+          <input id="adminId" name="adminId" type="text" value="admin" autocomplete="username" />
+        </label>
+        <label>
+          <span>비밀번호</span>
+          <input id="password" name="password" type="password" value="Admin1234!" autocomplete="current-password" />
+        </label>
+        <p class="form-error" id="login-error"></p>
+        <button type="submit" id="btn-login">로그인</button>
+      </form>
+
+      <button type="button" class="linkish" id="btn-demo">서버 없이 데모로 들어가기</button>
+      <p class="login__hint">
+        계정: <code>admin</code> / <code>Admin1234!</code><br />
+        주소: <code>http://localhost:5174</code>
+      </p>
+    </div>
+  </div>
+
+  <script type="module" src="/login.js"></script>
+</body>
+</html>
