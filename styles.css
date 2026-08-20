@@ -632,10 +632,43 @@ th {
   margin: 10px 0 0;
 }
 
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 6px;
+  font-size: 13px;
+}
+
+.form-stack textarea,
+#form-notification textarea,
+#suspend-notify-body {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+#suspend-notify-fields {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
 .empty {
   padding: 24px 8px;
   color: var(--muted);
   font-size: 14px;
+}
+
+.cell-wrap {
+  max-width: 280px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .ghost-btn {

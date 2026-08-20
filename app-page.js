@@ -17,14 +17,17 @@ const titles = {
   users: ["회원", "회원 리스트 정보"],
   stories: ["스토리", "콘텐츠 목록"],
   comments: ["댓글", "댓글 목록"],
-  chat: ["채팅", "대화 모니터링 · 관리자 메모"],
+  "chat-rooms": ["채팅방 신고", "채팅방 단위 신고 목록"],
+  "chat-messages": ["채팅 메시지 신고", "유저 채팅 메시지 신고 목록"],
   banned: ["금칙어", "금칙어 관리"],
+  admins: ["관리자", "계정 · 권한 관리"],
+  notifications: ["공지·푸시", "문구 작성 후 발송"],
+  "login-history": ["로그인 이력", "관리자/회원 접속 IP"],
+  "action-history": ["관리자 행동", "제재·푸시 등 감사 로그"],
 };
 
 let selectedGradeId = "";
 let gradesCache = [];
-let selectedChatRoomId = "";
-let chatRoomsCache = [];
 let storiesCache = [];
 let commentsCache = [];
 let revenueGroupBy = "day";
@@ -33,7 +36,8 @@ let suspendTarget = null;
 let suspendPeriod = "1";
 let userDetailCache = null;
 let paymentTotalFilter = "all";
-const CHAT_NOTES_KEY = "planwith_bo_chat_notes";
+let myPermissions = new Set();
+let myRole = "";
 
 function formatJoinDate(value) {
   if (!value) return "0000-00-00";
@@ -104,8 +108,13 @@ function setPage(page) {
   if (page === "users") loadUsers();
   if (page === "stories") loadStories();
   if (page === "comments") loadComments();
-  if (page === "chat") loadChat();
+  if (page === "chat-rooms") loadChatRoomReports();
+  if (page === "chat-messages") loadChatMessageReports();
   if (page === "banned") loadBanned();
+  if (page === "admins") loadAdmins();
+  if (page === "notifications") loadNotifications();
+  if (page === "login-history") loadLoginHistory();
+  if (page === "action-history") loadActionHistory();
 }
 
 function isReported(item) {
@@ -198,6 +207,14 @@ function openSuspendModal(user) {
     until.value = "";
     until.classList.add("is-hidden");
   }
+  const notify = document.getElementById("suspend-notify");
+  const notifyFields = document.getElementById("suspend-notify-fields");
+  if (notify) notify.checked = false;
+  if (notifyFields) notifyFields.classList.add("is-hidden");
+  const notifyTitle = document.getElementById("suspend-notify-title");
+  const notifyBody = document.getElementById("suspend-notify-body");
+  if (notifyTitle) notifyTitle.value = "";
+  if (notifyBody) notifyBody.value = "";
   if (confirmBtn) confirmBtn.disabled = false;
   document.querySelectorAll("#suspend-period button").forEach((btn) => {
     btn.classList.toggle("is-active", btn.dataset.days === "1");
@@ -253,6 +270,13 @@ async function confirmSuspend() {
       reason,
     };
     if (suspendedUntil) payload.suspendedUntil = suspendedUntil;
+    const notifyChecked = document.getElementById("suspend-notify")?.checked;
+    if (notifyChecked) {
+      payload.notifyUser = true;
+      payload.notifyChannel = document.getElementById("suspend-notify-channel")?.value || "PUSH";
+      payload.notifyTitle = (document.getElementById("suspend-notify-title")?.value || "").trim();
+      payload.notifyBody = (document.getElementById("suspend-notify-body")?.value || "").trim();
+    }
     await api("/api/admin/users/suspend", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -898,119 +922,198 @@ async function loadBanned() {
   }
 }
 
-function getChatNotes() {
+function fmtDt(v) {
+  if (!v) return "—";
+  return String(v).replace("T", " ").slice(0, 19);
+}
+
+async function loadChatRoomReports() {
+  const status = document.getElementById("chat-room-report-status")?.value || "";
+  const q = status ? `?status=${encodeURIComponent(status)}&size=50` : "?size=50";
+  const body = document.getElementById("chat-room-report-body");
+  const empty = document.getElementById("chat-room-report-empty");
   try {
-    return JSON.parse(localStorage.getItem(CHAT_NOTES_KEY) || "{}");
-  } catch {
-    return {};
+    const data = await api(`/api/admin/chat-reports/rooms${q}`);
+    const rows = data?.content || [];
+    body.innerHTML = rows
+      .map(
+        (r) => `<tr>
+      <td>${r.id}</td><td>${escapeHtml(r.roomId || "")}</td><td>${escapeHtml(r.roomTitle || "—")}</td>
+      <td>${escapeHtml(r.reporterNickname || r.reporterMemberUuid || "—")}</td>
+      <td>${escapeHtml(r.reason || "—")}</td><td>${escapeHtml(r.status || "")}</td><td>${fmtDt(r.createdAt)}</td>
+    </tr>`
+      )
+      .join("");
+    empty.hidden = rows.length > 0;
+    empty.textContent = "채팅방 신고가 없습니다.";
+  } catch (e) {
+    body.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = e.message || "불러오기 실패";
   }
 }
 
-function saveChatNote(roomId, text) {
-  const notes = getChatNotes();
-  if (!notes[roomId]) notes[roomId] = [];
-  notes[roomId].push({
-    id: Date.now(),
-    from: "admin",
-    text,
-    at: new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }),
-    side: "admin",
-  });
-  localStorage.setItem(CHAT_NOTES_KEY, JSON.stringify(notes));
-}
-
-function roomsWithNotes() {
-  return chatRoomsCache.map((room) => {
-    const notes = getChatNotes()[room.id] || [];
-    return { ...room, messages: [...(room.messages || []), ...notes] };
-  });
-}
-
-function renderChatRooms() {
-  const q = (document.getElementById("chat-room-q")?.value || "").toLowerCase();
-  const status = document.getElementById("chat-status-filter")?.value || "";
-  const sortDir = document.getElementById("chat-sort")?.value === "asc" ? "asc" : "desc";
-  const list = document.getElementById("chat-room-list");
-  if (!list) return;
-
-  let rooms = sortByDate(roomsWithNotes(), sortDir, "updatedAt").filter((r) => {
-    if (status && itemStatusKey(r) !== status) return false;
-    if (!q) return true;
-    return [r.title, r.lastMessage, ...(r.members || [])].some((v) => String(v || "").toLowerCase().includes(q));
-  });
-
-  if (!rooms.length) {
-    list.innerHTML = `<p class="empty">${status === "REPORTED" ? "신고된 대화가 없습니다." : q ? "검색 결과가 없습니다." : "대화가 없습니다."}</p>`;
-    return;
-  }
-  list.innerHTML = rooms
-    .map(
-      (r) => `
-      <button type="button" class="chat-room ${selectedChatRoomId === String(r.id) ? "is-active" : ""} ${isReported(r) ? "is-reported" : ""}" data-room-id="${r.id}">
-        <strong class="cell-with-badge">${reportBadgeHtml(r)}<span>${escapeHtml(r.title) || "대화"}</span></strong>
-        <span>${escapeHtml(r.lastMessage) || ""}</span>
-        <span>${escapeHtml(r.updatedAt) || ""} · ${isReported(r) ? "신고" : "정상"}</span>
-      </button>`
-    )
-    .join("");
-}
-
-function renderChatThread(roomId) {
-  const room = roomsWithNotes().find((r) => String(r.id) === String(roomId));
-  const box = document.getElementById("chat-messages");
-  const title = document.getElementById("chat-room-title");
-  const meta = document.getElementById("chat-room-meta");
-  const status = document.getElementById("chat-room-status");
-  const form = document.getElementById("form-chat-note");
-  if (!room) {
-    title.textContent = "대화를 선택하세요";
-    title.classList.remove("cell-with-badge");
-    meta.textContent = "신고/모니터링용 미리보기";
-    status.textContent = "—";
-    status.className = "badge";
-    box.innerHTML = `<p class="empty">왼쪽에서 대화를 선택하세요.</p>`;
-    form.hidden = true;
-    return;
-  }
-  if (isReported(room)) {
-    title.innerHTML = `${reportBadgeHtml(room)}<span>${escapeHtml(room.title) || "대화"}</span>`;
-    title.classList.add("cell-with-badge");
-  } else {
-    title.textContent = room.title || "대화";
-    title.classList.remove("cell-with-badge");
-  }
-  meta.textContent = `참여자: ${(room.members || []).join(", ") || "—"}`;
-  status.textContent = isReported(room) ? "신고됨" : "정상";
-  status.className = `badge ${isReported(room) ? "bad is-blink" : "ok"}`;
-  form.hidden = false;
-  const messages = room.messages || [];
-  box.innerHTML = messages.length
-    ? messages
-        .map(
-          (m) => `
-      <div class="chat-bubble ${m.side || "them"}">
-        ${m.side === "admin" ? `[관리자 메모] ${m.text}` : `<b>${m.from || ""}</b><br>${m.text || ""}`}
-        <small>${m.at || ""}</small>
-      </div>`
-        )
-        .join("")
-    : `<p class="empty">메시지가 없습니다.</p>`;
-  box.scrollTop = box.scrollHeight;
-}
-
-async function loadChat() {
-  chatRoomsCache = [];
+async function loadChatMessageReports() {
+  const status = document.getElementById("chat-msg-report-status")?.value || "";
+  const q = status ? `?status=${encodeURIComponent(status)}&size=50` : "?size=50";
+  const body = document.getElementById("chat-msg-report-body");
+  const empty = document.getElementById("chat-msg-report-empty");
   try {
-    const data = await api("/api/admin/chats");
-    chatRoomsCache = Array.isArray(data) ? data : data?.content || [];
+    const data = await api(`/api/admin/chat-reports/messages${q}`);
+    const rows = data?.content || [];
+    body.innerHTML = rows
+      .map(
+        (r) => `<tr>
+      <td>${r.id}</td><td>${escapeHtml(r.roomId || "")}</td>
+      <td>${escapeHtml(r.messagePreview || r.messageId || "—")}</td>
+      <td>${escapeHtml(r.senderNickname || r.senderMemberUuid || "—")}</td>
+      <td>${escapeHtml(r.reporterNickname || r.reporterMemberUuid || "—")}</td>
+      <td>${escapeHtml(r.reason || "—")}</td><td>${escapeHtml(r.status || "")}</td><td>${fmtDt(r.createdAt)}</td>
+    </tr>`
+      )
+      .join("");
+    empty.hidden = rows.length > 0;
+    empty.textContent = "채팅 메시지 신고가 없습니다.";
+  } catch (e) {
+    body.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = e.message || "불러오기 실패";
+  }
+}
+
+async function loadAdmins() {
+  const body = document.getElementById("admins-body");
+  const status = document.getElementById("admins-status");
+  status.textContent = "";
+  try {
+    const rows = await api("/api/admin/accounts");
+    body.innerHTML = (rows || [])
+      .map((a) => {
+        const perms = Array.isArray(a.permissions) ? a.permissions.join(", ") : "";
+        const canToggle = myRole === "SUPER_ADMIN" || myPermissions.has("ADMIN_MANAGE");
+        const nextStatus = a.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+        return `<tr>
+        <td>${a.id}</td><td>${escapeHtml(a.adminId || "")}</td><td>${escapeHtml(a.name || "")}</td>
+        <td>${escapeHtml(a.role || "")}</td><td class="cell-wrap">${escapeHtml(perms)}</td>
+        <td>${escapeHtml(a.status || "")}</td><td>${fmtDt(a.createdAt)}</td>
+        <td>${
+          canToggle
+            ? `<button type="button" class="ghost-btn" data-admin-toggle="${a.id}" data-status="${nextStatus}">${
+                nextStatus === "ACTIVE" ? "활성화" : "비활성화"
+              }</button>`
+            : "—"
+        }</td>
+      </tr>`;
+      })
+      .join("");
+  } catch (e) {
+    body.innerHTML = "";
+    status.textContent = e.message || "관리자 목록을 불러올 수 없습니다.";
+    status.style.color = "var(--danger)";
+  }
+}
+
+async function loadLoginHistory() {
+  const type = document.getElementById("login-history-actor-type")?.value || "";
+  const actorId = document.getElementById("login-history-actor-id")?.value || "";
+  const params = new URLSearchParams({ size: "50" });
+  if (type) params.set("actorType", type);
+  if (actorId) params.set("actorId", actorId);
+  const body = document.getElementById("login-history-body");
+  const empty = document.getElementById("login-history-empty");
+  try {
+    const data = await api(`/api/admin/login-histories?${params}`);
+    const rows = data?.content || [];
+    body.innerHTML = rows
+      .map(
+        (r) => `<tr>
+      <td>${r.id}</td><td>${escapeHtml(r.actorType || "")}</td><td>${r.actorId ?? "—"}</td>
+      <td>${escapeHtml(r.ipAddress || "—")}</td><td>${escapeHtml(r.deviceInfo || "—")}</td>
+      <td class="cell-wrap">${escapeHtml(r.userAgent || "—")}</td><td>${fmtDt(r.createdAt)}</td>
+    </tr>`
+      )
+      .join("");
+    empty.hidden = rows.length > 0;
+    empty.textContent = "이력이 없습니다.";
+  } catch (e) {
+    body.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = e.message || "불러오기 실패";
+  }
+}
+
+async function loadActionHistory() {
+  const type = document.getElementById("action-history-type")?.value || "";
+  const params = new URLSearchParams({ size: "50" });
+  if (type) params.set("actionType", type);
+  const body = document.getElementById("action-history-body");
+  const empty = document.getElementById("action-history-empty");
+  try {
+    const data = await api(`/api/admin/action-histories?${params}`);
+    const rows = data?.content || [];
+    body.innerHTML = rows
+      .map(
+        (r) => `<tr>
+      <td>${r.id}</td><td>${escapeHtml(r.adminLoginId || String(r.adminId || ""))}</td>
+      <td>${escapeHtml(r.actionType || "")}</td>
+      <td>${escapeHtml((r.targetType || "") + (r.targetId ? ":" + r.targetId : ""))}</td>
+      <td class="cell-wrap">${escapeHtml(r.summary || "—")}</td>
+      <td>${escapeHtml(r.ipAddress || "—")}</td><td>${fmtDt(r.createdAt)}</td>
+    </tr>`
+      )
+      .join("");
+    empty.hidden = rows.length > 0;
+    empty.textContent = "행동 내역이 없습니다.";
+  } catch (e) {
+    body.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = e.message || "불러오기 실패";
+  }
+}
+
+async function loadNotifications() {
+  const channel = document.getElementById("notification-channel-filter")?.value || "";
+  const params = new URLSearchParams({ size: "50" });
+  if (channel) params.set("channel", channel);
+  const body = document.getElementById("notifications-body");
+  const empty = document.getElementById("notifications-empty");
+  try {
+    const data = await api(`/api/admin/notifications?${params}`);
+    const rows = data?.content || [];
+    body.innerHTML = rows
+      .map(
+        (r) => `<tr>
+      <td>${r.id}</td><td>${escapeHtml(r.channel || "")}</td>
+      <td>${escapeHtml((r.targetType || "") + (r.targetId ? ":" + r.targetId : ""))}</td>
+      <td>${escapeHtml(r.title || "")}</td>
+      <td class="cell-wrap">${escapeHtml(r.body || "")}</td>
+      <td>${escapeHtml(r.status || "")}</td>
+      <td>${escapeHtml(r.adminLoginId || "")}</td>
+      <td>${fmtDt(r.createdAt)}</td>
+    </tr>`
+      )
+      .join("");
+    empty.hidden = rows.length > 0;
+    empty.textContent = "발송 이력이 없습니다.";
+  } catch (e) {
+    body.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = e.message || "불러오기 실패";
+  }
+}
+
+async function loadMyProfile() {
+  try {
+    const me = await api("/api/admin/auth/me");
+    if (me?.name) {
+      document.getElementById("admin-name").textContent = me.name;
+      sessionStorage.setItem(NAME_KEY, me.name);
+    }
+    myRole = me?.role || "";
+    myPermissions = new Set(Array.isArray(me?.permissions) ? me.permissions : []);
   } catch {
-    chatRoomsCache = [];
+    /* ignore */
   }
-  if (selectedChatRoomId && !chatRoomsCache.some((r) => String(r.id) === String(selectedChatRoomId))) {
-    selectedChatRoomId = "";
-  }
-  renderChatRooms();
-  renderChatThread(selectedChatRoomId);
 }
 
 document.querySelectorAll(".side__nav button").forEach((btn) => {
@@ -1039,7 +1142,12 @@ document.getElementById("btn-users-reload")?.addEventListener("click", loadUsers
 document.getElementById("btn-stories-reload")?.addEventListener("click", loadStories);
 document.getElementById("btn-comments-reload")?.addEventListener("click", loadComments);
 document.getElementById("btn-banned-reload")?.addEventListener("click", loadBanned);
-document.getElementById("btn-chat-reload")?.addEventListener("click", loadChat);
+document.getElementById("btn-chat-rooms-reload")?.addEventListener("click", loadChatRoomReports);
+document.getElementById("btn-chat-messages-reload")?.addEventListener("click", loadChatMessageReports);
+document.getElementById("btn-admins-reload")?.addEventListener("click", loadAdmins);
+document.getElementById("btn-notifications-reload")?.addEventListener("click", loadNotifications);
+document.getElementById("btn-login-history-reload")?.addEventListener("click", loadLoginHistory);
+document.getElementById("btn-action-history-reload")?.addEventListener("click", loadActionHistory);
 
 document.getElementById("story-q")?.addEventListener("input", renderStories);
 document.getElementById("story-status-filter")?.addEventListener("change", renderStories);
@@ -1047,8 +1155,11 @@ document.getElementById("story-sort")?.addEventListener("change", loadStories);
 document.getElementById("comment-q")?.addEventListener("input", renderComments);
 document.getElementById("comment-status-filter")?.addEventListener("change", renderComments);
 document.getElementById("comment-sort")?.addEventListener("change", renderComments);
-document.getElementById("chat-status-filter")?.addEventListener("change", renderChatRooms);
-document.getElementById("chat-sort")?.addEventListener("change", renderChatRooms);
+document.getElementById("chat-room-report-status")?.addEventListener("change", loadChatRoomReports);
+document.getElementById("chat-msg-report-status")?.addEventListener("change", loadChatMessageReports);
+document.getElementById("login-history-actor-type")?.addEventListener("change", loadLoginHistory);
+document.getElementById("login-history-actor-id")?.addEventListener("change", loadLoginHistory);
+document.getElementById("action-history-type")?.addEventListener("change", loadActionHistory);
 
 document.getElementById("page-users")?.addEventListener("click", async (e) => {
   const btn = e.target.closest("button[data-action]");
@@ -1225,22 +1336,81 @@ document.getElementById("suspend-period")?.addEventListener("click", (e) => {
     }
   }
 });
-document.getElementById("chat-room-q")?.addEventListener("input", renderChatRooms);
-document.getElementById("chat-room-list")?.addEventListener("click", (e) => {
-  const btn = e.target.closest(".chat-room");
-  if (!btn) return;
-  selectedChatRoomId = btn.dataset.roomId;
-  renderChatRooms();
-  renderChatThread(selectedChatRoomId);
-});
-document.getElementById("form-chat-note")?.addEventListener("submit", (e) => {
+document.getElementById("form-create-admin")?.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const text = e.target.note.value.trim();
-  if (!text || !selectedChatRoomId) return;
-  saveChatNote(selectedChatRoomId, text);
-  e.target.reset();
-  renderChatThread(selectedChatRoomId);
+  const fd = new FormData(e.target);
+  const status = document.getElementById("admins-status");
+  try {
+    await api("/api/admin/accounts", {
+      method: "POST",
+      body: JSON.stringify({
+        adminId: String(fd.get("adminId") || "").trim(),
+        password: String(fd.get("password") || ""),
+        name: String(fd.get("name") || "").trim(),
+        role: String(fd.get("role") || "ADMIN"),
+      }),
+    });
+    e.target.reset();
+    status.textContent = "관리자 계정을 추가했습니다.";
+    status.style.color = "var(--ok)";
+    loadAdmins();
+  } catch (ex) {
+    status.textContent = ex.message || "추가 실패";
+    status.style.color = "var(--danger)";
+  }
 });
+
+document.getElementById("page-admins")?.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-admin-toggle]");
+  if (!btn) return;
+  const status = document.getElementById("admins-status");
+  try {
+    await api(`/api/admin/accounts/${btn.dataset.adminToggle}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: btn.dataset.status }),
+    });
+    status.textContent = "상태를 변경했습니다.";
+    status.style.color = "var(--ok)";
+    loadAdmins();
+  } catch (ex) {
+    status.textContent = ex.message || "상태 변경 실패";
+    status.style.color = "var(--danger)";
+  }
+});
+
+document.getElementById("form-notification")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const status = document.getElementById("notification-status");
+  try {
+    const res = await api("/api/admin/notifications", {
+      method: "POST",
+      body: JSON.stringify({
+        channel: String(fd.get("channel") || "NOTICE"),
+        targetType: String(fd.get("targetType") || "ALL"),
+        targetId: String(fd.get("targetId") || "").trim() || null,
+        title: String(fd.get("title") || "").trim(),
+        body: String(fd.get("body") || "").trim(),
+      }),
+    });
+    status.textContent = `${res?.channel === "NOTICE" ? "공지" : "푸시"} 발송이 접수되었습니다.`;
+    status.style.color = "var(--ok)";
+    e.target.reset();
+    loadNotifications();
+  } catch (ex) {
+    status.textContent = ex.message || "발송 실패";
+    status.style.color = "var(--danger)";
+  }
+});
+
+document.getElementById("notification-channel-filter")?.addEventListener("change", loadNotifications);
+
+document.getElementById("suspend-notify")?.addEventListener("change", (e) => {
+  const fields = document.getElementById("suspend-notify-fields");
+  if (!fields) return;
+  fields.classList.toggle("is-hidden", !e.target.checked);
+});
+
 document.getElementById("user-q")?.addEventListener("input", loadUsers);
 document.getElementById("user-status-filter")?.addEventListener("change", loadUsers);
 document.getElementById("user-type-filter")?.addEventListener("change", loadUsers);
@@ -1289,4 +1459,4 @@ document.getElementById("banned-body")?.addEventListener("click", async (e) => {
   }
 });
 
-setPage("dashboard");
+loadMyProfile().finally(() => setPage("dashboard"));

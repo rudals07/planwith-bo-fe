@@ -18,8 +18,13 @@
         <button type="button" data-page="users">회원</button>
         <button type="button" data-page="stories">스토리</button>
         <button type="button" data-page="comments">댓글</button>
-        <button type="button" data-page="chat">채팅</button>
+        <button type="button" data-page="chat-rooms">채팅방 신고</button>
+        <button type="button" data-page="chat-messages">채팅 메시지 신고</button>
         <button type="button" data-page="banned">금칙어</button>
+        <button type="button" data-page="admins">관리자</button>
+        <button type="button" data-page="notifications">공지·푸시</button>
+        <button type="button" data-page="login-history">로그인 이력</button>
+        <button type="button" data-page="action-history">관리자 행동</button>
       </nav>
       <div class="side__foot">
         <p id="admin-name">admin</p>
@@ -167,41 +172,59 @@
         </div>
       </section>
 
-      <section id="page-chat" class="page is-hidden">
-        <div class="chat-layout">
-          <aside class="chat-rooms panel">
-            <div class="chat-rooms__head">
-              <h2>대화 목록</h2>
-              <button type="button" id="btn-chat-reload" class="ghost-btn">새로고침</button>
-            </div>
-            <div class="toolbar toolbar--filters chat-filters">
-              <select id="chat-status-filter" aria-label="채팅 상태 필터">
-                <option value="">상태 전체</option>
-                <option value="NORMAL">정상</option>
-                <option value="REPORTED">신고</option>
-              </select>
-              <select id="chat-sort" aria-label="채팅 정렬">
-                <option value="desc" selected>최신 순</option>
-                <option value="asc">오래된 순</option>
-              </select>
-            </div>
-            <input id="chat-room-q" type="search" placeholder="닉네임/방 검색" />
-            <div id="chat-room-list" class="chat-room-list"></div>
-          </aside>
-          <div class="chat-thread panel">
-            <div class="chat-thread__head">
-              <div>
-                <h2 id="chat-room-title">대화를 선택하세요</h2>
-                <p class="muted" id="chat-room-meta">신고/모니터링용 미리보기</p>
-              </div>
-              <span class="badge" id="chat-room-status">—</span>
-            </div>
-            <div id="chat-messages" class="chat-messages"></div>
-            <form id="form-chat-note" class="chat-note" hidden>
-              <input name="note" type="text" placeholder="관리자 메모 남기기" maxlength="200" />
-              <button type="submit">메모</button>
-            </form>
+      <section id="page-chat-rooms" class="page is-hidden">
+        <div class="panel dash-head">
+          <div>
+            <h2>채팅방 신고</h2>
+            <p class="muted">채팅방 단위로 접수된 신고</p>
           </div>
+          <button type="button" id="btn-chat-rooms-reload" class="ghost-btn">새로고침</button>
+        </div>
+        <div class="toolbar toolbar--filters">
+          <select id="chat-room-report-status">
+            <option value="">상태 전체</option>
+            <option value="REPORTED">신고</option>
+            <option value="RESOLVED">처리완료</option>
+          </select>
+        </div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th><th>방 ID</th><th>방 제목</th><th>신고자</th><th>사유</th><th>상태</th><th>일시</th>
+              </tr>
+            </thead>
+            <tbody id="chat-room-report-body"></tbody>
+          </table>
+          <p class="empty" id="chat-room-report-empty" hidden>채팅방 신고가 없습니다.</p>
+        </div>
+      </section>
+
+      <section id="page-chat-messages" class="page is-hidden">
+        <div class="panel dash-head">
+          <div>
+            <h2>채팅 메시지 신고</h2>
+            <p class="muted">유저가 작성한 채팅 메시지 단위 신고</p>
+          </div>
+          <button type="button" id="btn-chat-messages-reload" class="ghost-btn">새로고침</button>
+        </div>
+        <div class="toolbar toolbar--filters">
+          <select id="chat-msg-report-status">
+            <option value="">상태 전체</option>
+            <option value="REPORTED">신고</option>
+            <option value="RESOLVED">처리완료</option>
+          </select>
+        </div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th><th>방</th><th>메시지</th><th>작성자</th><th>신고자</th><th>사유</th><th>상태</th><th>일시</th>
+              </tr>
+            </thead>
+            <tbody id="chat-msg-report-body"></tbody>
+          </table>
+          <p class="empty" id="chat-msg-report-empty" hidden>채팅 메시지 신고가 없습니다.</p>
         </div>
       </section>
 
@@ -218,6 +241,152 @@
             </thead>
             <tbody id="banned-body"></tbody>
           </table>
+        </div>
+      </section>
+
+      <section id="page-admins" class="page is-hidden">
+        <div class="panel dash-head">
+          <div>
+            <h2>관리자 계정</h2>
+            <p class="muted">메인 관리자가 계정·권한을 관리합니다</p>
+          </div>
+          <button type="button" id="btn-admins-reload" class="ghost-btn">새로고침</button>
+        </div>
+        <form id="form-create-admin" class="panel toolbar toolbar--wrap">
+          <input name="adminId" type="text" placeholder="관리자 ID" required maxlength="50" />
+          <input name="password" type="password" placeholder="비밀번호 (8자+)" required minlength="8" />
+          <input name="name" type="text" placeholder="이름" required maxlength="50" />
+          <select name="role">
+            <option value="ADMIN">일반 관리자</option>
+            <option value="SUPER_ADMIN">메인 관리자</option>
+          </select>
+          <button type="submit">계정 추가</button>
+        </form>
+        <p class="muted" id="admins-status"></p>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th><th>관리자ID</th><th>이름</th><th>역할</th><th>권한</th><th>상태</th><th>생성일</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="admins-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="page-notifications" class="page is-hidden">
+        <div class="panel dash-head">
+          <div>
+            <h2>공지사항 · 푸시</h2>
+            <p class="muted">문구를 직접 작성해 발송합니다</p>
+          </div>
+          <button type="button" id="btn-notifications-reload" class="ghost-btn">새로고침</button>
+        </div>
+        <form id="form-notification" class="panel">
+          <div class="toolbar toolbar--wrap">
+            <select name="channel" required>
+              <option value="NOTICE">공지사항</option>
+              <option value="PUSH">푸시</option>
+            </select>
+            <select name="targetType" id="notify-target-type">
+              <option value="ALL">전체</option>
+              <option value="USER">특정 회원</option>
+            </select>
+            <input name="targetId" id="notify-target-id" type="text" placeholder="회원 UUID (특정 회원일 때)" />
+          </div>
+          <label class="field">
+            <span>제목</span>
+            <input name="title" type="text" maxlength="100" required placeholder="제목을 입력하세요" />
+          </label>
+          <label class="field">
+            <span>내용</span>
+            <textarea name="body" rows="5" maxlength="2000" required placeholder="발송할 문구를 직접 입력하세요"></textarea>
+          </label>
+          <button type="submit">발송</button>
+          <p class="muted" id="notification-status"></p>
+        </form>
+        <div class="toolbar toolbar--filters">
+          <select id="notification-channel-filter">
+            <option value="">전체</option>
+            <option value="NOTICE">공지</option>
+            <option value="PUSH">푸시</option>
+          </select>
+        </div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th><th>채널</th><th>대상</th><th>제목</th><th>내용</th><th>상태</th><th>관리자</th><th>일시</th>
+              </tr>
+            </thead>
+            <tbody id="notifications-body"></tbody>
+          </table>
+          <p class="empty" id="notifications-empty" hidden>발송 이력이 없습니다.</p>
+        </div>
+      </section>
+
+      <section id="page-login-history" class="page is-hidden">
+        <div class="panel dash-head">
+          <div>
+            <h2>로그인 이력 · IP</h2>
+            <p class="muted">관리자/회원 로그인 및 접속 IP</p>
+          </div>
+          <button type="button" id="btn-login-history-reload" class="ghost-btn">새로고침</button>
+        </div>
+        <div class="toolbar toolbar--filters">
+          <select id="login-history-actor-type">
+            <option value="">전체</option>
+            <option value="ADMIN">관리자</option>
+            <option value="USER">회원</option>
+          </select>
+          <input id="login-history-actor-id" type="number" placeholder="actorId (선택)" />
+        </div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th><th>유형</th><th>actorId</th><th>IP</th><th>기기</th><th>User-Agent</th><th>일시</th>
+              </tr>
+            </thead>
+            <tbody id="login-history-body"></tbody>
+          </table>
+          <p class="empty" id="login-history-empty" hidden>이력이 없습니다.</p>
+        </div>
+      </section>
+
+      <section id="page-action-history" class="page is-hidden">
+        <div class="panel dash-head">
+          <div>
+            <h2>관리자 행동 내역</h2>
+            <p class="muted">제재·푸시·멤버십 등 관리자 액션 감사 로그</p>
+          </div>
+          <button type="button" id="btn-action-history-reload" class="ghost-btn">새로고침</button>
+        </div>
+        <div class="toolbar toolbar--filters">
+          <select id="action-history-type">
+            <option value="">유형 전체</option>
+            <option value="SUSPEND_USER">정지</option>
+            <option value="UNSUSPEND_USER">정지해제</option>
+            <option value="PUSH_SEND">푸시</option>
+            <option value="NOTICE_SEND">공지</option>
+            <option value="MEMBERSHIP_NUDGE">독촉</option>
+            <option value="MEMBERSHIP_SETTLE">정산</option>
+            <option value="CREATE_ADMIN">관리자생성</option>
+            <option value="UPDATE_ADMIN_PERMISSIONS">권한변경</option>
+            <option value="UPDATE_ADMIN_STATUS">상태변경</option>
+          </select>
+        </div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th><th>관리자</th><th>유형</th><th>대상</th><th>요약</th><th>IP</th><th>일시</th>
+              </tr>
+            </thead>
+            <tbody id="action-history-body"></tbody>
+          </table>
+          <p class="empty" id="action-history-empty" hidden>행동 내역이 없습니다.</p>
         </div>
       </section>
     </main>
@@ -241,6 +410,27 @@
           <button type="button" data-days="custom">직접 지정</button>
         </div>
         <input id="suspend-until" type="datetime-local" class="is-hidden" />
+      </div>
+      <label class="field checkbox-field">
+        <input id="suspend-notify" type="checkbox" />
+        <span>정지 후 유저에게 알림 발송</span>
+      </label>
+      <div id="suspend-notify-fields" class="is-hidden">
+        <label class="field">
+          <span>알림 채널</span>
+          <select id="suspend-notify-channel">
+            <option value="PUSH">푸시</option>
+            <option value="NOTICE">공지</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>알림 제목</span>
+          <input id="suspend-notify-title" type="text" maxlength="100" placeholder="계정 이용 제한 안내" />
+        </label>
+        <label class="field">
+          <span>알림 내용</span>
+          <textarea id="suspend-notify-body" rows="3" maxlength="2000" placeholder="유저에게 보낼 문구를 입력하세요 (비우면 정지 사유 사용)"></textarea>
+        </label>
       </div>
       <p class="form-error" id="suspend-error" hidden></p>
       <div class="modal__actions">
