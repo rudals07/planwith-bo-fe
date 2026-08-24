@@ -21,6 +21,7 @@ const titles = {
   "chat-messages": ["채팅 메시지 신고", "유저 채팅 메시지 신고 목록"],
   banned: ["금칙어", "금칙어 관리"],
   admins: ["관리자", "계정 · 권한 관리"],
+  membership: ["멤버십", "신청 심사 · 구독 · 결제 · 정산"],
   notifications: ["공지·푸시", "문구 작성 후 발송"],
   "login-history": ["로그인 이력", "관리자/회원 접속 IP"],
   "action-history": ["관리자 행동", "제재·푸시 등 감사 로그"],
@@ -38,6 +39,23 @@ let userDetailCache = null;
 let paymentTotalFilter = "all";
 let myPermissions = new Set();
 let myRole = "";
+let lastAdminRows = [];
+let adminPermTarget = null;
+let membershipRejectTarget = null;
+
+const PERMISSION_LABELS = {
+  USERS_MANAGE: "회원 관리",
+  CONTENT_MANAGE: "콘텐츠 관리",
+  CHAT_MANAGE: "채팅 신고 관리",
+  BANNED_WORDS: "금칙어 관리",
+  ADMIN_MANAGE: "관리자 계정 관리",
+  AUDIT_VIEW: "감사 로그 조회",
+  HISTORY_VIEW: "이력 조회",
+  PUSH_SEND: "푸시 발송",
+  NOTICE_SEND: "공지 발송",
+  MEMBERSHIP_MANAGE: "멤버십 관리",
+};
+const ALL_PERMISSIONS = Object.keys(PERMISSION_LABELS);
 
 function formatJoinDate(value) {
   if (!value) return "0000-00-00";
@@ -316,7 +334,7 @@ function renderUserActions(u) {
 }
 
 function groupCaption(group) {
-  return { day: "일간 수입 추이", month: "월간 수입 추이", year: "연간 수입 추이" }[group] || "수입 추이";
+  return { day: "일간 수입 추이", month: "월간 수입 추이", year: "연간 수입 추이", total: "전체 수입 추이 (연도별)" }[group] || "수입 추이";
 }
 
 function drawRevenueChart(periods) {
@@ -987,22 +1005,31 @@ async function loadAdmins() {
   status.textContent = "";
   try {
     const rows = await api("/api/admin/accounts");
-    body.innerHTML = (rows || [])
+    lastAdminRows = rows || [];
+    body.innerHTML = lastAdminRows
       .map((a) => {
-        const perms = Array.isArray(a.permissions) ? a.permissions.join(", ") : "";
+        const perms = Array.isArray(a.permissions)
+          ? a.permissions.map((p) => PERMISSION_LABELS[p] || p).join(", ")
+          : "";
         const canToggle = myRole === "SUPER_ADMIN" || myPermissions.has("ADMIN_MANAGE");
         const nextStatus = a.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+        const actions = canToggle
+          ? `<div class="row-actions">
+              ${
+                a.role === "SUPER_ADMIN"
+                  ? ""
+                  : `<button type="button" class="ghost-btn" data-admin-perm="${a.id}">권한 수정</button>`
+              }
+              <button type="button" class="${nextStatus === "ACTIVE" ? "ghost-btn" : "danger"}" data-admin-toggle="${a.id}" data-status="${nextStatus}">${
+                nextStatus === "ACTIVE" ? "활성화" : "비활성화"
+              }</button>
+            </div>`
+          : "—";
         return `<tr>
         <td>${a.id}</td><td>${escapeHtml(a.adminId || "")}</td><td>${escapeHtml(a.name || "")}</td>
         <td>${escapeHtml(a.role || "")}</td><td class="cell-wrap">${escapeHtml(perms)}</td>
         <td>${escapeHtml(a.status || "")}</td><td>${fmtDt(a.createdAt)}</td>
-        <td>${
-          canToggle
-            ? `<button type="button" class="ghost-btn" data-admin-toggle="${a.id}" data-status="${nextStatus}">${
-                nextStatus === "ACTIVE" ? "활성화" : "비활성화"
-              }</button>`
-            : "—"
-        }</td>
+        <td>${actions}</td>
       </tr>`;
       })
       .join("");
@@ -1010,6 +1037,193 @@ async function loadAdmins() {
     body.innerHTML = "";
     status.textContent = e.message || "관리자 목록을 불러올 수 없습니다.";
     status.style.color = "var(--danger)";
+  }
+}
+
+function showAdminPermError(msg) {
+  const err = document.getElementById("admin-perm-error");
+  if (!err) return;
+  err.textContent = msg || "";
+  err.hidden = !msg;
+}
+
+function openAdminPermModal(admin) {
+  adminPermTarget = admin;
+  showAdminPermError("");
+  const modal = document.getElementById("admin-perm-modal");
+  const target = document.getElementById("admin-perm-target");
+  const checks = document.getElementById("admin-perm-checks");
+  if (target) target.textContent = `${admin.name || "관리자"} (${admin.adminId || ""})`;
+  const current = new Set(Array.isArray(admin.permissions) ? admin.permissions : []);
+  if (checks) {
+    checks.innerHTML = ALL_PERMISSIONS.map(
+      (p) =>
+        `<label><input type="checkbox" value="${p}" ${current.has(p) ? "checked" : ""} /> ${PERMISSION_LABELS[p]}</label>`
+    ).join("");
+  }
+  if (modal) {
+    modal.hidden = false;
+    modal.classList.add("is-open");
+    modal.setAttribute("aria-hidden", "false");
+  }
+}
+
+function closeAdminPermModal() {
+  adminPermTarget = null;
+  const modal = document.getElementById("admin-perm-modal");
+  if (modal) {
+    modal.classList.remove("is-open");
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+  }
+  showAdminPermError("");
+}
+
+async function saveAdminPermissions() {
+  if (!adminPermTarget) return;
+  const checked = Array.from(
+    document.querySelectorAll("#admin-perm-checks input[type=checkbox]:checked")
+  ).map((el) => el.value);
+  const saveBtn = document.getElementById("btn-admin-perm-save");
+  if (saveBtn) saveBtn.disabled = true;
+  showAdminPermError("");
+  try {
+    await api(`/api/admin/accounts/${adminPermTarget.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ permissions: checked }),
+    });
+    closeAdminPermModal();
+    const status = document.getElementById("admins-status");
+    if (status) {
+      status.textContent = "권한을 변경했습니다.";
+      status.style.color = "var(--ok)";
+    }
+    await loadAdmins();
+  } catch (ex) {
+    showAdminPermError(ex.message || "권한 변경에 실패했습니다.");
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+function setMembershipStatus(elId, msg, ok) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  el.textContent = msg || "";
+  el.style.color = ok === undefined ? "" : ok ? "var(--ok)" : "var(--danger)";
+}
+
+async function approveMembershipApplication() {
+  const uuid = (document.getElementById("membership-uuid-input")?.value || "").trim();
+  if (!uuid) {
+    setMembershipStatus("membership-action-status", "멤버십 UUID를 입력해주세요.", false);
+    return;
+  }
+  try {
+    const res = await api(`/api/admin/memberships/${encodeURIComponent(uuid)}/approve`, { method: "POST" });
+    setMembershipStatus("membership-action-status", `승인 완료 (상태: ${res?.status || "APPROVED"})`, true);
+  } catch (ex) {
+    setMembershipStatus("membership-action-status", ex.message || "승인 처리에 실패했습니다.", false);
+  }
+}
+
+async function approveSettlementRequest() {
+  const uuid = (document.getElementById("settlement-uuid-input")?.value || "").trim();
+  if (!uuid) {
+    setMembershipStatus("settlement-action-status", "정산 UUID를 입력해주세요.", false);
+    return;
+  }
+  try {
+    const res = await api(`/api/admin/memberships/settlements/${encodeURIComponent(uuid)}/approve`, { method: "POST" });
+    setMembershipStatus("settlement-action-status", `승인 완료 (상태: ${res?.status || "APPROVED"})`, true);
+  } catch (ex) {
+    setMembershipStatus("settlement-action-status", ex.message || "승인 처리에 실패했습니다.", false);
+  }
+}
+
+async function paySettlementRequest() {
+  const uuid = (document.getElementById("settlement-uuid-input")?.value || "").trim();
+  if (!uuid) {
+    setMembershipStatus("settlement-action-status", "정산 UUID를 입력해주세요.", false);
+    return;
+  }
+  try {
+    const res = await api(`/api/admin/memberships/settlements/${encodeURIComponent(uuid)}/pay`, { method: "POST" });
+    setMembershipStatus("settlement-action-status", `지급 완료 (상태: ${res?.status || "PAID"})`, true);
+  } catch (ex) {
+    setMembershipStatus("settlement-action-status", ex.message || "지급 처리에 실패했습니다.", false);
+  }
+}
+
+function showMembershipRejectError(msg) {
+  const err = document.getElementById("membership-reject-error");
+  if (!err) return;
+  err.textContent = msg || "";
+  err.hidden = !msg;
+}
+
+function openMembershipRejectModal(kind, uuid, label) {
+  if (!uuid) {
+    setMembershipStatus(
+      kind === "application" ? "membership-action-status" : "settlement-action-status",
+      kind === "application" ? "멤버십 UUID를 입력해주세요." : "정산 UUID를 입력해주세요.",
+      false
+    );
+    return;
+  }
+  membershipRejectTarget = { kind, uuid };
+  showMembershipRejectError("");
+  const modal = document.getElementById("membership-reject-modal");
+  const target = document.getElementById("membership-reject-target");
+  const reason = document.getElementById("membership-reject-reason");
+  if (target) target.textContent = label || uuid;
+  if (reason) reason.value = "";
+  if (modal) {
+    modal.hidden = false;
+    modal.classList.add("is-open");
+    modal.setAttribute("aria-hidden", "false");
+  }
+  reason?.focus();
+}
+
+function closeMembershipRejectModal() {
+  membershipRejectTarget = null;
+  const modal = document.getElementById("membership-reject-modal");
+  if (modal) {
+    modal.classList.remove("is-open");
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+  }
+  showMembershipRejectError("");
+}
+
+async function confirmMembershipReject() {
+  if (!membershipRejectTarget) return;
+  const rejectReason = (document.getElementById("membership-reject-reason")?.value || "").trim();
+  if (!rejectReason) {
+    showMembershipRejectError("거절 사유를 입력해주세요.");
+    return;
+  }
+  const confirmBtn = document.getElementById("btn-membership-reject-confirm");
+  if (confirmBtn) confirmBtn.disabled = true;
+  showMembershipRejectError("");
+  try {
+    const { kind, uuid } = membershipRejectTarget;
+    const path =
+      kind === "application"
+        ? `/api/admin/memberships/${encodeURIComponent(uuid)}/reject`
+        : `/api/admin/memberships/settlements/${encodeURIComponent(uuid)}/reject`;
+    const res = await api(path, { method: "POST", body: JSON.stringify({ rejectReason }) });
+    closeMembershipRejectModal();
+    setMembershipStatus(
+      kind === "application" ? "membership-action-status" : "settlement-action-status",
+      `거절 완료 (상태: ${res?.status || "REJECTED"})`,
+      true
+    );
+  } catch (ex) {
+    showMembershipRejectError(ex.message || "거절 처리에 실패했습니다.");
+  } finally {
+    if (confirmBtn) confirmBtn.disabled = false;
   }
 }
 
@@ -1348,6 +1562,7 @@ document.getElementById("form-create-admin")?.addEventListener("submit", async (
         password: String(fd.get("password") || ""),
         name: String(fd.get("name") || "").trim(),
         role: String(fd.get("role") || "ADMIN"),
+        permissions: fd.getAll("permissions"),
       }),
     });
     e.target.reset();
@@ -1361,6 +1576,12 @@ document.getElementById("form-create-admin")?.addEventListener("submit", async (
 });
 
 document.getElementById("page-admins")?.addEventListener("click", async (e) => {
+  const permBtn = e.target.closest("[data-admin-perm]");
+  if (permBtn) {
+    const admin = lastAdminRows.find((a) => String(a.id) === permBtn.dataset.adminPerm);
+    if (admin) openAdminPermModal(admin);
+    return;
+  }
   const btn = e.target.closest("[data-admin-toggle]");
   if (!btn) return;
   const status = document.getElementById("admins-status");
@@ -1376,6 +1597,52 @@ document.getElementById("page-admins")?.addEventListener("click", async (e) => {
     status.textContent = ex.message || "상태 변경 실패";
     status.style.color = "var(--danger)";
   }
+});
+
+document.getElementById("create-admin-role")?.addEventListener("change", (e) => {
+  const perms = document.getElementById("create-admin-perms");
+  perms?.classList.toggle("is-disabled", e.target.value === "SUPER_ADMIN");
+});
+
+document.getElementById("btn-admin-perm-cancel")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  closeAdminPermModal();
+});
+
+document.getElementById("btn-admin-perm-save")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  saveAdminPermissions();
+});
+
+document.getElementById("admin-perm-modal")?.addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeAdminPermModal();
+});
+
+document.getElementById("btn-membership-approve")?.addEventListener("click", approveMembershipApplication);
+document.getElementById("btn-membership-reject-open")?.addEventListener("click", () => {
+  const uuid = (document.getElementById("membership-uuid-input")?.value || "").trim();
+  openMembershipRejectModal("application", uuid, uuid);
+});
+
+document.getElementById("btn-settlement-approve")?.addEventListener("click", approveSettlementRequest);
+document.getElementById("btn-settlement-pay")?.addEventListener("click", paySettlementRequest);
+document.getElementById("btn-settlement-reject-open")?.addEventListener("click", () => {
+  const uuid = (document.getElementById("settlement-uuid-input")?.value || "").trim();
+  openMembershipRejectModal("settlement", uuid, uuid);
+});
+
+document.getElementById("btn-membership-reject-cancel")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  closeMembershipRejectModal();
+});
+
+document.getElementById("btn-membership-reject-confirm")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  confirmMembershipReject();
+});
+
+document.getElementById("membership-reject-modal")?.addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeMembershipRejectModal();
 });
 
 document.getElementById("form-notification")?.addEventListener("submit", async (e) => {
