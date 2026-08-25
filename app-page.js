@@ -16,17 +16,46 @@ const titles = {
   dashboard: ["대시보드", "사이트 수입 정보"],
   users: ["회원", "회원 리스트 정보"],
   stories: ["스토리", "콘텐츠 목록"],
-  chat: ["채팅", "대화 모니터링 · 관리자 메모"],
+  comments: ["댓글", "댓글 목록"],
+  "chat-rooms": ["채팅방 신고", "채팅방 단위 신고 목록"],
+  "chat-messages": ["채팅 메시지 신고", "유저 채팅 메시지 신고 목록"],
   banned: ["금칙어", "금칙어 관리"],
+  admins: ["관리자", "계정 · 권한 관리"],
+  membership: ["멤버십", "신청 심사 · 구독 · 결제 · 정산"],
+  notifications: ["공지·푸시", "문구 작성 후 발송"],
+  "login-history": ["로그인 이력", "관리자/회원 접속 IP"],
+  "action-history": ["관리자 행동", "제재·푸시 등 감사 로그"],
 };
 
 let selectedGradeId = "";
 let gradesCache = [];
-let selectedChatRoomId = "";
-let chatRoomsCache = [];
+let storiesCache = [];
+let commentsCache = [];
 let revenueGroupBy = "day";
 let lastRevenuePeriods = [];
-const CHAT_NOTES_KEY = "planwith_bo_chat_notes";
+let suspendTarget = null;
+let suspendPeriod = "1";
+let userDetailCache = null;
+let paymentTotalFilter = "all";
+let myPermissions = new Set();
+let myRole = "";
+let lastAdminRows = [];
+let adminPermTarget = null;
+let membershipRejectTarget = null;
+
+const PERMISSION_LABELS = {
+  USERS_MANAGE: "회원 관리",
+  CONTENT_MANAGE: "콘텐츠 관리",
+  CHAT_MANAGE: "채팅 신고 관리",
+  BANNED_WORDS: "금칙어 관리",
+  ADMIN_MANAGE: "관리자 계정 관리",
+  AUDIT_VIEW: "감사 로그 조회",
+  HISTORY_VIEW: "이력 조회",
+  PUSH_SEND: "푸시 발송",
+  NOTICE_SEND: "공지 발송",
+  MEMBERSHIP_MANAGE: "멤버십 관리",
+};
+const ALL_PERMISSIONS = Object.keys(PERMISSION_LABELS);
 
 function formatJoinDate(value) {
   if (!value) return "0000-00-00";
@@ -70,13 +99,13 @@ async function api(path, options = {}) {
   if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch(path, { ...options, headers });
-  if (res.status === 401 || res.status === 403) {
+  const json = await res.json().catch(() => null);
+  if (res.status === 401) {
     sessionStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(NAME_KEY);
     window.location.replace("/");
     throw new Error("로그인이 필요합니다. 다시 로그인해 주세요.");
   }
-  const json = await res.json().catch(() => null);
   if (!res.ok || json?.success === false) {
     throw new Error(json?.message || json?.error?.message || `요청 실패 (${res.status})`);
   }
@@ -90,17 +119,222 @@ function setPage(page) {
     b.classList.toggle("is-active", b.dataset.page === page);
   });
   const [t, s] = titles[page] || ["", ""];
-  document.getElementById("page-title").textContent = t;
+  const titleEl = document.getElementById("page-title");
+  if (titleEl) titleEl.textContent = t;
   document.getElementById("page-sub").textContent = s;
   if (page === "dashboard") loadDashboard();
   if (page === "users") loadUsers();
   if (page === "stories") loadStories();
-  if (page === "chat") loadChat();
+  if (page === "comments") loadComments();
+  if (page === "chat-rooms") loadChatRoomReports();
+  if (page === "chat-messages") loadChatMessageReports();
   if (page === "banned") loadBanned();
+  if (page === "admins") loadAdmins();
+  if (page === "notifications") loadNotifications();
+  if (page === "login-history") loadLoginHistory();
+  if (page === "action-history") loadActionHistory();
+}
+
+function isReported(item) {
+  if (!item) return false;
+  if (item.reported === true) return true;
+  const status = String(item.status || "").toUpperCase();
+  return status === "REPORTED" || Number(item.reportCount || 0) > 0;
+}
+
+function reportBadgeHtml(item) {
+  if (!isReported(item)) return "";
+  const count = Number(item.reportCount || 0);
+  const label = count > 0 ? `신고 ${count}` : "신고";
+  return `<span class="report-badge is-blink" title="신고된 콘텐츠">${label}</span>`;
+}
+
+function itemStatusKey(item) {
+  return isReported(item) ? "REPORTED" : "NORMAL";
+}
+
+function sortByDate(list, direction, field = "createdAt") {
+  const dir = direction === "asc" ? 1 : -1;
+  return [...list].sort((a, b) => {
+    const av = String(a?.[field] || a?.updatedAt || "");
+    const bv = String(b?.[field] || b?.updatedAt || "");
+    if (av === bv) return 0;
+    return av > bv ? dir : -dir;
+  });
+}
+
+function matchesQuery(item, q, fields) {
+  if (!q) return true;
+  return fields.some((f) => String(item?.[f] ?? "").toLowerCase().includes(q));
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function formatDateTime(value) {
+  if (!value) return "영구";
+  const s = String(value);
+  return s.length >= 16 ? s.slice(0, 16).replace("T", " ") : s;
+}
+
+function toLocalDateTimeParam(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function resolveSuspendedUntil() {
+  if (suspendPeriod === "permanent") return null;
+  if (suspendPeriod === "custom") {
+    const raw = document.getElementById("suspend-until")?.value;
+    if (!raw) return undefined;
+    return toLocalDateTimeParam(new Date(raw));
+  }
+  const days = Number(suspendPeriod);
+  if (!Number.isFinite(days) || days <= 0) return null;
+  const until = new Date();
+  until.setDate(until.getDate() + days);
+  return toLocalDateTimeParam(until);
+}
+
+function userApiKey(user) {
+  return user?.memberUuid || user?.id || (user?.memberNo != null ? String(user.memberNo) : "");
+}
+
+function showSuspendError(msg) {
+  const err = document.getElementById("suspend-error");
+  if (!err) return;
+  err.textContent = msg || "";
+  err.hidden = !msg;
+}
+
+function openSuspendModal(user) {
+  suspendTarget = user;
+  suspendPeriod = "1";
+  const modal = document.getElementById("suspend-modal");
+  const reason = document.getElementById("suspend-reason");
+  const until = document.getElementById("suspend-until");
+  const confirmBtn = document.getElementById("btn-suspend-confirm");
+  showSuspendError("");
+  if (reason) reason.value = "";
+  if (until) {
+    until.value = "";
+    until.classList.add("is-hidden");
+  }
+  const notify = document.getElementById("suspend-notify");
+  const notifyFields = document.getElementById("suspend-notify-fields");
+  if (notify) notify.checked = false;
+  if (notifyFields) notifyFields.classList.add("is-hidden");
+  const notifyTitle = document.getElementById("suspend-notify-title");
+  const notifyBody = document.getElementById("suspend-notify-body");
+  if (notifyTitle) notifyTitle.value = "";
+  if (notifyBody) notifyBody.value = "";
+  if (confirmBtn) confirmBtn.disabled = false;
+  document.querySelectorAll("#suspend-period button").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.days === "1");
+  });
+  const target = document.getElementById("suspend-modal-target");
+  if (target) {
+    target.textContent = `${user.nickname || "회원"} · 회원번호 ${user.memberNo ?? "—"}`;
+  }
+  if (modal) {
+    modal.hidden = false;
+    modal.classList.add("is-open");
+    modal.setAttribute("aria-hidden", "false");
+  }
+  reason?.focus();
+}
+
+function closeSuspendModal() {
+  suspendTarget = null;
+  const modal = document.getElementById("suspend-modal");
+  if (modal) {
+    modal.classList.remove("is-open");
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+  }
+  showSuspendError("");
+}
+
+async function confirmSuspend() {
+  const memberNo = suspendTarget?.memberNo != null ? Number(suspendTarget.memberNo) : null;
+  const memberUuid = suspendTarget?.memberUuid || suspendTarget?.id || null;
+  if (memberNo == null && !memberUuid) {
+    showSuspendError("대상 회원을 찾을 수 없습니다. 목록을 새로고침해 주세요.");
+    return;
+  }
+  const reason = (document.getElementById("suspend-reason")?.value || "").trim();
+  if (!reason) {
+    showSuspendError("정지 사유를 입력해주세요.");
+    document.getElementById("suspend-reason")?.focus();
+    return;
+  }
+  const suspendedUntil = resolveSuspendedUntil();
+  if (suspendedUntil === undefined) {
+    showSuspendError("정지 종료 일시를 선택해주세요.");
+    return;
+  }
+  const confirmBtn = document.getElementById("btn-suspend-confirm");
+  if (confirmBtn) confirmBtn.disabled = true;
+  showSuspendError("");
+  try {
+    const payload = {
+      memberNo: Number.isFinite(memberNo) ? memberNo : null,
+      memberUuid: memberUuid || null,
+      reason,
+    };
+    if (suspendedUntil) payload.suspendedUntil = suspendedUntil;
+    const notifyChecked = document.getElementById("suspend-notify")?.checked;
+    if (notifyChecked) {
+      payload.notifyUser = true;
+      payload.notifyChannel = document.getElementById("suspend-notify-channel")?.value || "PUSH";
+      payload.notifyTitle = (document.getElementById("suspend-notify-title")?.value || "").trim();
+      payload.notifyBody = (document.getElementById("suspend-notify-body")?.value || "").trim();
+    }
+    await api("/api/admin/users/suspend", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    closeSuspendModal();
+    const statusEl = document.getElementById("users-status");
+    if (statusEl) {
+      statusEl.textContent = "계정을 정지했습니다. 해당 회원은 로그인·이용이 제한됩니다.";
+      statusEl.style.color = "var(--ok)";
+    }
+    await loadUsers();
+  } catch (ex) {
+    showSuspendError(ex.message || "계정 정지에 실패했습니다.");
+    if (confirmBtn) confirmBtn.disabled = false;
+  }
+}
+
+function renderUserActions(u) {
+  const st = String(u.status || "").toUpperCase();
+  const key = escapeHtml(userApiKey(u));
+  const memberNo = u.memberNo != null ? String(u.memberNo) : "";
+  if (st === "ACTIVE" || !st) {
+    return `<div class="row-actions">
+      <button type="button" class="danger btn-suspend" data-action="suspend" data-key="${key}" data-member-no="${escapeHtml(memberNo)}">계정 정지</button>
+    </div>`;
+  }
+  if (st === "SUSPENDED") {
+    const untilLabel = u.suspendedUntil == null ? "영구" : formatDateTime(u.suspendedUntil);
+    const reason = u.suspendReason ? `<div class="muted tiny">사유: ${escapeHtml(u.suspendReason)}</div>` : "";
+    return `<div class="row-actions row-actions--stack">
+      <button type="button" class="ghost btn-unsuspend" data-action="unsuspend" data-key="${key}" data-member-no="${escapeHtml(memberNo)}">정지 해제</button>
+      <div class="muted tiny">만료: ${escapeHtml(untilLabel)}</div>
+      ${reason}
+    </div>`;
+  }
+  return `<span class="muted">—</span>`;
 }
 
 function groupCaption(group) {
-  return { day: "일간 수입 추이", month: "월간 수입 추이", year: "연간 수입 추이" }[group] || "수입 추이";
+  return { day: "일간 수입 추이", month: "월간 수입 추이", year: "연간 수입 추이", total: "전체 수입 추이 (연도별)" }[group] || "수입 추이";
 }
 
 function drawRevenueChart(periods) {
@@ -265,6 +499,7 @@ async function loadUsers() {
   const q = (document.getElementById("user-q").value || "").trim().toLowerCase();
   const statusFilter = document.getElementById("user-status-filter")?.value || "";
   const typeFilter = document.getElementById("user-type-filter")?.value || "";
+  const sortDir = document.getElementById("user-sort")?.value === "asc" ? "asc" : "desc";
   const body = document.getElementById("users-body");
   const empty = document.getElementById("users-empty");
   const statusEl = document.getElementById("users-status");
@@ -276,7 +511,11 @@ async function loadUsers() {
 
   let list = [];
   try {
-    const qs = new URLSearchParams({ page: "0", size: "100" });
+    const qs = new URLSearchParams({
+      page: "0",
+      size: "100",
+      sort: `createdAt,${sortDir}`,
+    });
     if (selectedGradeId) qs.set("gradeId", selectedGradeId);
     if (statusFilter) qs.set("status", statusFilter);
     if (typeFilter) qs.set("memberType", typeFilter);
@@ -305,14 +544,23 @@ async function loadUsers() {
   rows.forEach((u) => {
     const tr = document.createElement("tr");
     const st = u.status;
+    const userPayload = {
+      memberUuid: u.memberUuid || u.id || null,
+      memberNo: u.memberNo,
+      nickname: u.nickname,
+      status: u.status,
+    };
+    tr.dataset.user = JSON.stringify(userPayload);
+    tr.classList.add("is-clickable");
     tr.innerHTML = `
       <td>${u.memberNo ?? "—"}</td>
-      <td>${u.nickname ?? "—"}</td>
-      <td>${u.email ?? "—"}</td>
-      <td><span class="badge">${u.gradeName ?? "—"}</span></td>
+      <td>${escapeHtml(u.nickname) || "—"}</td>
+      <td>${escapeHtml(u.email) || "—"}</td>
+      <td><span class="badge">${escapeHtml(u.gradeName) || "—"}</span></td>
       <td>${formatJoinDate(u.createdAt)}</td>
       <td>${labelMemberType(u.memberType, u.loginType)}</td>
-      <td><span class="badge ${statusBadgeClass(st)}">${labelMemberStatus(st)}</span></td>`;
+      <td><span class="badge ${statusBadgeClass(st)}">${labelMemberStatus(st)}</span></td>
+      <td>${renderUserActions({ ...u, ...userPayload })}</td>`;
     body.appendChild(tr);
   });
   if (statusEl) {
@@ -321,29 +569,353 @@ async function loadUsers() {
   }
 }
 
+function profileImageHtml(url) {
+  const src = String(url || "").trim();
+  if (!src) {
+    return `<div class="user-detail__avatar is-empty" aria-hidden="true">사진 없음</div>`;
+  }
+  const safe = escapeHtml(src);
+  return `<img class="user-detail__avatar" src="${safe}" alt="프로필" loading="lazy"
+    onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'user-detail__avatar is-empty',textContent:'파일 없음'}))" />`;
+}
+
+function labelPaymentPath(path) {
+  const p = String(path || "").toUpperCase();
+  if (p === "EASY_PAY") return "간편 결제";
+  if (p === "DIRECT") return "직접 등록";
+  return path || "—";
+}
+
+function labelTokenStatus(status, balance) {
+  const s = String(status || "").toUpperCase();
+  if (s === "ACTIVE") return `활성 · ${Number(balance || 0).toLocaleString("ko-KR")} 토큰`;
+  if (s === "NONE") return "지갑 없음";
+  return `${status || "—"} · ${Number(balance || 0).toLocaleString("ko-KR")} 토큰`;
+}
+
+function paymentTotalByFilter(detail, filter) {
+  switch (filter) {
+    case "day":
+      return detail.totalPaymentDay ?? 0;
+    case "month":
+      return detail.totalPaymentMonth ?? 0;
+    case "year":
+      return detail.totalPaymentYear ?? 0;
+    default:
+      return detail.totalPaymentAmount ?? 0;
+  }
+}
+
+function paymentFilterLabel(filter) {
+  return { all: "현재까지", day: "일별(오늘)", month: "월별(이번 달)", year: "년별(올해)" }[filter] || "현재까지";
+}
+
+function closeUserDetailModal() {
+  const modal = document.getElementById("user-detail-modal");
+  if (!modal) return;
+  modal.classList.remove("is-open");
+  modal.hidden = true;
+  modal.setAttribute("aria-hidden", "true");
+  userDetailCache = null;
+}
+
+function showUserDetailError(msg) {
+  const el = document.getElementById("user-detail-error");
+  if (!el) return;
+  el.hidden = !msg;
+  el.textContent = msg || "";
+}
+
+function renderUserDetail(detail) {
+  userDetailCache = detail;
+  const body = document.getElementById("user-detail-body");
+  const statusEl = document.getElementById("user-detail-status");
+  const sub = document.getElementById("user-detail-sub");
+  if (!body) return;
+  showUserDetailError("");
+  if (statusEl) {
+    statusEl.textContent = "회원 상세 정보를 불러왔습니다.";
+    statusEl.style.color = "var(--ok)";
+  }
+  if (sub) {
+    sub.textContent = `#${detail.memberNo ?? "—"} · ${detail.nickname || "회원"} · ${labelMemberStatus(detail.status)}`;
+  }
+
+  const terms = detail.optionalTermConsents || [];
+  const payments = detail.paymentHistory || [];
+  const following = detail.followingList || [];
+  const reported = detail.reportedComments || [];
+  const total = paymentTotalByFilter(detail, paymentTotalFilter);
+  const avatar = profileImageHtml(detail.profileImage);
+
+  body.hidden = false;
+  body.innerHTML = `
+    <div class="user-detail__profile">
+      ${avatar}
+      <dl class="user-detail__grid" style="flex:1">
+        <div class="user-detail__item"><dt>닉네임</dt><dd>${escapeHtml(detail.nickname) || "—"}</dd></div>
+        <div class="user-detail__item"><dt>이메일</dt><dd>${escapeHtml(detail.email) || "—"}</dd></div>
+        <div class="user-detail__item"><dt>전화번호</dt><dd>${escapeHtml(detail.phone) || "—"}</dd></div>
+        <div class="user-detail__item"><dt>회원 등급</dt><dd>${escapeHtml(detail.gradeName) || "—"}</dd></div>
+        <div class="user-detail__item"><dt>현재 토큰 상황</dt><dd>${escapeHtml(labelTokenStatus(detail.tokenStatus, detail.tokenBalance))}</dd></div>
+        <div class="user-detail__item"><dt>팔로워 수</dt><dd>${Number(detail.followerCount || 0).toLocaleString("ko-KR")}</dd></div>
+        <div class="user-detail__item" style="grid-column:1/-1"><dt>프로필 소개글</dt><dd>${escapeHtml(detail.introduction) || "—"}</dd></div>
+      </dl>
+    </div>
+
+    <section class="user-detail__section">
+      <h3>선택 약관 동의 여부</h3>
+      ${
+        terms.length
+          ? `<div class="term-checks">${terms
+              .map(
+                (t) => `<label><input type="checkbox" disabled ${t.agreed ? "checked" : ""} /> ${escapeHtml(t.title) || "선택 약관"}</label>`
+              )
+              .join("")}</div>`
+          : `<p class="empty">선택 약관 정보가 없습니다.</p>`
+      }
+    </section>
+
+    <section class="user-detail__section">
+      <div class="user-detail__section-head">
+        <h3>총 결제 금액</h3>
+        <div class="seg" id="payment-total-filter" role="tablist" aria-label="총 결제 금액 필터">
+          <button type="button" data-pay-filter="all" class="${paymentTotalFilter === "all" ? "is-active" : ""}">현재까지</button>
+          <button type="button" data-pay-filter="day" class="${paymentTotalFilter === "day" ? "is-active" : ""}">일별</button>
+          <button type="button" data-pay-filter="month" class="${paymentTotalFilter === "month" ? "is-active" : ""}">월별</button>
+          <button type="button" data-pay-filter="year" class="${paymentTotalFilter === "year" ? "is-active" : ""}">년별</button>
+        </div>
+      </div>
+      <p><strong>${money(total)}</strong> <span class="muted">(${paymentFilterLabel(paymentTotalFilter)})</span></p>
+    </section>
+
+    <section class="user-detail__section">
+      <h3>결제 내역</h3>
+      ${
+        payments.length
+          ? `<table class="detail-table">
+              <thead><tr><th>일시</th><th>금액</th><th>결제 경로</th><th>상태</th></tr></thead>
+              <tbody>
+                ${payments
+                  .map(
+                    (p) => `<tr>
+                      <td>${p.paidAt ? String(p.paidAt).replace("T", " ").slice(0, 16) : "—"}</td>
+                      <td>${money(p.amount)}</td>
+                      <td>${escapeHtml(labelPaymentPath(p.paymentPath))}</td>
+                      <td>${escapeHtml(p.status) || "—"}</td>
+                    </tr>`
+                  )
+                  .join("")}
+              </tbody>
+            </table>`
+          : `<p class="empty">결제 내역이 없습니다.</p>`
+      }
+    </section>
+
+    <section class="user-detail__section">
+      <h3>멤버십</h3>
+      <dl class="user-detail__grid">
+        <div class="user-detail__item"><dt>멤버십 여부 (수익 신청)</dt><dd>${detail.membershipApplied ? "신청 완료" : "미신청"}</dd></div>
+        <div class="user-detail__item"><dt>신청 가능 등급</dt><dd>${detail.membershipEligible ? "가능" : "불가"}</dd></div>
+        <div class="user-detail__item"><dt>멤버십 수익</dt><dd>${money(detail.membershipRevenue)}</dd></div>
+      </dl>
+      <div class="detail-actions">
+        <button type="button" data-detail-action="settle">정산</button>
+        <button type="button" class="ghost" data-detail-action="nudge-email" ${detail.canNudgeMembership ? "" : "disabled"}>독촉 이메일</button>
+        <button type="button" class="ghost" data-detail-action="nudge-sms" ${detail.canNudgeMembership ? "" : "disabled"}>독촉 문자</button>
+      </div>
+    </section>
+
+    <section class="user-detail__section">
+      <h3>팔로우 리스트 <span class="muted">(${following.length})</span></h3>
+      ${
+        following.length
+          ? `<div class="follow-chips">${following
+              .map((f) => `<span>${escapeHtml(f.nickname) || escapeHtml(f.memberUuid) || "—"}</span>`)
+              .join("")}</div>`
+          : `<p class="empty">팔로우한 회원이 없습니다.</p>`
+      }
+    </section>
+
+    <section class="user-detail__section">
+      <h3>신고 받은 댓글 리스트</h3>
+      ${
+        reported.length
+          ? `<table class="detail-table">
+              <thead><tr><th>내용</th><th>스토리</th><th>신고</th><th></th></tr></thead>
+              <tbody>
+                ${reported
+                  .map(
+                    (c) => `<tr>
+                      <td>${escapeHtml(c.content) || "—"}</td>
+                      <td>${escapeHtml(c.storyTitle) || "—"}</td>
+                      <td>${Number(c.reportCount || 0)}</td>
+                      <td>${
+                        c.deletable
+                          ? `<button type="button" class="danger" data-detail-action="delete-comment" data-comment-id="${c.id}">삭제</button>`
+                          : `<span class="muted">—</span>`
+                      }</td>
+                    </tr>`
+                  )
+                  .join("")}
+              </tbody>
+            </table>`
+          : `<p class="empty">신고 받은 댓글이 없습니다.</p>`
+      }
+    </section>
+  `;
+}
+
+async function openUserDetail(userId) {
+  const modal = document.getElementById("user-detail-modal");
+  const body = document.getElementById("user-detail-body");
+  const statusEl = document.getElementById("user-detail-status");
+  if (!modal || !userId) return;
+  paymentTotalFilter = "all";
+  modal.hidden = false;
+  modal.classList.add("is-open");
+  modal.setAttribute("aria-hidden", "false");
+  if (body) {
+    body.hidden = true;
+    body.innerHTML = "";
+  }
+  showUserDetailError("");
+  if (statusEl) {
+    statusEl.textContent = "회원 상세 정보를 불러오는 중…";
+    statusEl.style.color = "var(--muted)";
+  }
+  try {
+    const detail = await api(`/api/admin/users/${encodeURIComponent(userId)}`);
+    renderUserDetail(detail || {});
+  } catch (ex) {
+    if (statusEl) {
+      statusEl.textContent = "회원 상세 정보를 불러오지 못했습니다.";
+      statusEl.style.color = "var(--danger)";
+    }
+    showUserDetailError(ex.message || "회원 상세 정보를 불러오지 못했습니다.");
+  }
+}
+
+async function reloadUserDetail() {
+  const id = userDetailCache?.id;
+  if (!id) return;
+  try {
+    const detail = await api(`/api/admin/users/${encodeURIComponent(id)}`);
+    renderUserDetail(detail || {});
+  } catch (ex) {
+    showUserDetailError(ex.message || "회원 상세 정보를 새로고침하지 못했습니다.");
+  }
+}
+
+async function loadComments() {
+  const body = document.getElementById("comments-body");
+  const empty = document.getElementById("comments-empty");
+  if (body) body.innerHTML = "";
+  if (empty) {
+    empty.hidden = true;
+    empty.textContent = "댓글이 없습니다.";
+  }
+  try {
+    const page = await api("/api/admin/comments?page=0&size=50");
+    commentsCache = page?.content || page || [];
+  } catch (ex) {
+    commentsCache = [];
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = ex.message || "댓글을 불러오지 못했습니다.";
+    } else if (body) {
+      body.innerHTML = `<tr><td colspan="5" class="empty">${ex.message || "댓글을 불러오지 못했습니다."}</td></tr>`;
+    }
+    return;
+  }
+  renderComments();
+}
+
+function renderComments() {
+  const body = document.getElementById("comments-body");
+  const empty = document.getElementById("comments-empty");
+  if (!body) return;
+  body.innerHTML = "";
+
+  const q = (document.getElementById("comment-q")?.value || "").trim().toLowerCase();
+  const status = document.getElementById("comment-status-filter")?.value || "";
+  const sortDir = document.getElementById("comment-sort")?.value === "asc" ? "asc" : "desc";
+
+  let list = sortByDate(commentsCache, sortDir, "createdAt").filter((c) => {
+    if (status && itemStatusKey(c) !== status) return false;
+    return matchesQuery(c, q, ["content", "authorNickname", "storyTitle"]);
+  });
+
+  if (!list.length) {
+    const msg = status === "REPORTED" ? "신고된 댓글이 없습니다." : q ? "검색 결과가 없습니다." : "댓글이 없습니다.";
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = msg;
+    } else {
+      body.innerHTML = `<tr><td colspan="5" class="empty">${msg}</td></tr>`;
+    }
+    return;
+  }
+  if (empty) empty.hidden = true;
+  list.forEach((c) => {
+    const tr = document.createElement("tr");
+    if (isReported(c)) tr.classList.add("row-reported");
+    tr.innerHTML = `
+      <td>${c.id ?? "—"}</td>
+      <td>${escapeHtml(c.authorNickname) || "—"}</td>
+      <td><span class="cell-with-badge">${reportBadgeHtml(c)}<span>${escapeHtml(c.content) || "—"}</span></span></td>
+      <td>${escapeHtml(c.storyTitle) || "—"}</td>
+      <td>${c.createdAt ? String(c.createdAt).slice(0, 10) : "—"}</td>`;
+    body.appendChild(tr);
+  });
+}
+
 async function loadStories() {
   const body = document.getElementById("stories-body");
   body.innerHTML = "";
   try {
-    const page = await api("/api/admin/stories?page=0&size=50");
-    const list = page?.content || page || [];
-    if (!list.length) {
-      body.innerHTML = `<tr><td colspan="5" class="empty">스토리가 없습니다.</td></tr>`;
-      return;
-    }
-    list.forEach((s) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${s.id ?? "—"}</td>
-        <td>${s.authorNickname ?? "—"}</td>
-        <td>${s.preview ?? s.title ?? "—"}</td>
-        <td><span class="badge">${s.status ?? "—"}</span></td>
-        <td>${s.createdAt ? String(s.createdAt).slice(0, 10) : "—"}</td>`;
-      body.appendChild(tr);
-    });
+    const sortDir = document.getElementById("story-sort")?.value === "asc" ? "asc" : "desc";
+    const page = await api(`/api/admin/stories?page=0&size=50&sort=createdAt,${sortDir}`);
+    storiesCache = page?.content || page || [];
   } catch (ex) {
+    storiesCache = [];
     body.innerHTML = `<tr><td colspan="5" class="empty">${ex.message || "스토리를 불러오지 못했습니다."}</td></tr>`;
+    return;
   }
+  renderStories();
+}
+
+function renderStories() {
+  const body = document.getElementById("stories-body");
+  if (!body) return;
+  body.innerHTML = "";
+
+  const q = (document.getElementById("story-q")?.value || "").trim().toLowerCase();
+  const status = document.getElementById("story-status-filter")?.value || "";
+  const sortDir = document.getElementById("story-sort")?.value === "asc" ? "asc" : "desc";
+
+  let list = sortByDate(storiesCache, sortDir, "createdAt").filter((s) => {
+    if (status && itemStatusKey(s) !== status) return false;
+    return matchesQuery(s, q, ["title", "preview", "authorNickname"]);
+  });
+
+  if (!list.length) {
+    const msg = status === "REPORTED" ? "신고된 스토리가 없습니다." : q ? "검색 결과가 없습니다." : "스토리가 없습니다.";
+    body.innerHTML = `<tr><td colspan="5" class="empty">${msg}</td></tr>`;
+    return;
+  }
+  list.forEach((s) => {
+    const tr = document.createElement("tr");
+    if (isReported(s)) tr.classList.add("row-reported");
+    const preview = escapeHtml(s.preview ?? s.title) || "—";
+    tr.innerHTML = `
+      <td>${s.id ?? "—"}</td>
+      <td>${escapeHtml(s.authorNickname) || "—"}</td>
+      <td><span class="cell-with-badge">${reportBadgeHtml(s)}<span>${preview}</span></span></td>
+      <td><span class="badge ${isReported(s) ? "bad" : ""}">${isReported(s) ? "신고됨" : "정상"}</span></td>
+      <td>${s.createdAt ? String(s.createdAt).slice(0, 10) : "—"}</td>`;
+    body.appendChild(tr);
+  });
 }
 
 async function loadBanned() {
@@ -368,108 +940,394 @@ async function loadBanned() {
   }
 }
 
-function getChatNotes() {
+function fmtDt(v) {
+  if (!v) return "—";
+  return String(v).replace("T", " ").slice(0, 19);
+}
+
+async function loadChatRoomReports() {
+  const status = document.getElementById("chat-room-report-status")?.value || "";
+  const q = status ? `?status=${encodeURIComponent(status)}&size=50` : "?size=50";
+  const body = document.getElementById("chat-room-report-body");
+  const empty = document.getElementById("chat-room-report-empty");
   try {
-    return JSON.parse(localStorage.getItem(CHAT_NOTES_KEY) || "{}");
-  } catch {
-    return {};
+    const data = await api(`/api/admin/chat-reports/rooms${q}`);
+    const rows = data?.content || [];
+    body.innerHTML = rows
+      .map(
+        (r) => `<tr>
+      <td>${r.id}</td><td>${escapeHtml(r.roomId || "")}</td><td>${escapeHtml(r.roomTitle || "—")}</td>
+      <td>${escapeHtml(r.reporterNickname || r.reporterMemberUuid || "—")}</td>
+      <td>${escapeHtml(r.reason || "—")}</td><td>${escapeHtml(r.status || "")}</td><td>${fmtDt(r.createdAt)}</td>
+    </tr>`
+      )
+      .join("");
+    empty.hidden = rows.length > 0;
+    empty.textContent = "채팅방 신고가 없습니다.";
+  } catch (e) {
+    body.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = e.message || "불러오기 실패";
   }
 }
 
-function saveChatNote(roomId, text) {
-  const notes = getChatNotes();
-  if (!notes[roomId]) notes[roomId] = [];
-  notes[roomId].push({
-    id: Date.now(),
-    from: "admin",
-    text,
-    at: new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }),
-    side: "admin",
-  });
-  localStorage.setItem(CHAT_NOTES_KEY, JSON.stringify(notes));
+async function loadChatMessageReports() {
+  const status = document.getElementById("chat-msg-report-status")?.value || "";
+  const q = status ? `?status=${encodeURIComponent(status)}&size=50` : "?size=50";
+  const body = document.getElementById("chat-msg-report-body");
+  const empty = document.getElementById("chat-msg-report-empty");
+  try {
+    const data = await api(`/api/admin/chat-reports/messages${q}`);
+    const rows = data?.content || [];
+    body.innerHTML = rows
+      .map(
+        (r) => `<tr>
+      <td>${r.id}</td><td>${escapeHtml(r.roomId || "")}</td>
+      <td>${escapeHtml(r.messagePreview || r.messageId || "—")}</td>
+      <td>${escapeHtml(r.senderNickname || r.senderMemberUuid || "—")}</td>
+      <td>${escapeHtml(r.reporterNickname || r.reporterMemberUuid || "—")}</td>
+      <td>${escapeHtml(r.reason || "—")}</td><td>${escapeHtml(r.status || "")}</td><td>${fmtDt(r.createdAt)}</td>
+    </tr>`
+      )
+      .join("");
+    empty.hidden = rows.length > 0;
+    empty.textContent = "채팅 메시지 신고가 없습니다.";
+  } catch (e) {
+    body.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = e.message || "불러오기 실패";
+  }
 }
 
-function roomsWithNotes() {
-  return chatRoomsCache.map((room) => {
-    const notes = getChatNotes()[room.id] || [];
-    return { ...room, messages: [...(room.messages || []), ...notes] };
-  });
+async function loadAdmins() {
+  const body = document.getElementById("admins-body");
+  const status = document.getElementById("admins-status");
+  status.textContent = "";
+  try {
+    const rows = await api("/api/admin/accounts");
+    lastAdminRows = rows || [];
+    body.innerHTML = lastAdminRows
+      .map((a) => {
+        const perms = Array.isArray(a.permissions)
+          ? a.permissions.map((p) => PERMISSION_LABELS[p] || p).join(", ")
+          : "";
+        const canToggle = myRole === "SUPER_ADMIN" || myPermissions.has("ADMIN_MANAGE");
+        const nextStatus = a.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+        const actions = canToggle
+          ? `<div class="row-actions">
+              ${
+                a.role === "SUPER_ADMIN"
+                  ? ""
+                  : `<button type="button" class="ghost-btn" data-admin-perm="${a.id}">권한 수정</button>`
+              }
+              <button type="button" class="${nextStatus === "ACTIVE" ? "ghost-btn" : "danger"}" data-admin-toggle="${a.id}" data-status="${nextStatus}">${
+                nextStatus === "ACTIVE" ? "활성화" : "비활성화"
+              }</button>
+            </div>`
+          : "—";
+        return `<tr>
+        <td>${a.id}</td><td>${escapeHtml(a.adminId || "")}</td><td>${escapeHtml(a.name || "")}</td>
+        <td>${escapeHtml(a.role || "")}</td><td class="cell-wrap">${escapeHtml(perms)}</td>
+        <td>${escapeHtml(a.status || "")}</td><td>${fmtDt(a.createdAt)}</td>
+        <td>${actions}</td>
+      </tr>`;
+      })
+      .join("");
+  } catch (e) {
+    body.innerHTML = "";
+    status.textContent = e.message || "관리자 목록을 불러올 수 없습니다.";
+    status.style.color = "var(--danger)";
+  }
 }
 
-function renderChatRooms() {
-  const q = (document.getElementById("chat-room-q")?.value || "").toLowerCase();
-  const list = document.getElementById("chat-room-list");
-  if (!list) return;
-  const rooms = roomsWithNotes().filter(
-    (r) =>
-      !q ||
-      [r.title, r.lastMessage, ...(r.members || [])].some((v) => String(v || "").toLowerCase().includes(q))
-  );
-  if (!rooms.length) {
-    list.innerHTML = `<p class="empty">대화가 없습니다.</p>`;
+function showAdminPermError(msg) {
+  const err = document.getElementById("admin-perm-error");
+  if (!err) return;
+  err.textContent = msg || "";
+  err.hidden = !msg;
+}
+
+function openAdminPermModal(admin) {
+  adminPermTarget = admin;
+  showAdminPermError("");
+  const modal = document.getElementById("admin-perm-modal");
+  const target = document.getElementById("admin-perm-target");
+  const checks = document.getElementById("admin-perm-checks");
+  if (target) target.textContent = `${admin.name || "관리자"} (${admin.adminId || ""})`;
+  const current = new Set(Array.isArray(admin.permissions) ? admin.permissions : []);
+  if (checks) {
+    checks.innerHTML = ALL_PERMISSIONS.map(
+      (p) =>
+        `<label><input type="checkbox" value="${p}" ${current.has(p) ? "checked" : ""} /> ${PERMISSION_LABELS[p]}</label>`
+    ).join("");
+  }
+  if (modal) {
+    modal.hidden = false;
+    modal.classList.add("is-open");
+    modal.setAttribute("aria-hidden", "false");
+  }
+}
+
+function closeAdminPermModal() {
+  adminPermTarget = null;
+  const modal = document.getElementById("admin-perm-modal");
+  if (modal) {
+    modal.classList.remove("is-open");
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+  }
+  showAdminPermError("");
+}
+
+async function saveAdminPermissions() {
+  if (!adminPermTarget) return;
+  const checked = Array.from(
+    document.querySelectorAll("#admin-perm-checks input[type=checkbox]:checked")
+  ).map((el) => el.value);
+  const saveBtn = document.getElementById("btn-admin-perm-save");
+  if (saveBtn) saveBtn.disabled = true;
+  showAdminPermError("");
+  try {
+    await api(`/api/admin/accounts/${adminPermTarget.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ permissions: checked }),
+    });
+    closeAdminPermModal();
+    const status = document.getElementById("admins-status");
+    if (status) {
+      status.textContent = "권한을 변경했습니다.";
+      status.style.color = "var(--ok)";
+    }
+    await loadAdmins();
+  } catch (ex) {
+    showAdminPermError(ex.message || "권한 변경에 실패했습니다.");
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+function setMembershipStatus(elId, msg, ok) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  el.textContent = msg || "";
+  el.style.color = ok === undefined ? "" : ok ? "var(--ok)" : "var(--danger)";
+}
+
+async function approveMembershipApplication() {
+  const uuid = (document.getElementById("membership-uuid-input")?.value || "").trim();
+  if (!uuid) {
+    setMembershipStatus("membership-action-status", "멤버십 UUID를 입력해주세요.", false);
     return;
   }
-  list.innerHTML = rooms
-    .map(
-      (r) => `
-      <button type="button" class="chat-room ${selectedChatRoomId === r.id ? "is-active" : ""}" data-room-id="${r.id}">
-        <strong>${r.title}</strong>
-        <span>${r.lastMessage || ""}</span>
-        <span>${r.updatedAt || ""} · ${r.status === "REPORTED" ? "신고" : "정상"}</span>
-      </button>`
-    )
-    .join("");
+  try {
+    const res = await api(`/api/admin/memberships/${encodeURIComponent(uuid)}/approve`, { method: "POST" });
+    setMembershipStatus("membership-action-status", `승인 완료 (상태: ${res?.status || "APPROVED"})`, true);
+  } catch (ex) {
+    setMembershipStatus("membership-action-status", ex.message || "승인 처리에 실패했습니다.", false);
+  }
 }
 
-function renderChatThread(roomId) {
-  const room = roomsWithNotes().find((r) => String(r.id) === String(roomId));
-  const box = document.getElementById("chat-messages");
-  const title = document.getElementById("chat-room-title");
-  const meta = document.getElementById("chat-room-meta");
-  const status = document.getElementById("chat-room-status");
-  const form = document.getElementById("form-chat-note");
-  if (!room) {
-    title.textContent = "대화를 선택하세요";
-    meta.textContent = "신고/모니터링용 미리보기";
-    status.textContent = "—";
-    status.className = "badge";
-    box.innerHTML = `<p class="empty">왼쪽에서 대화를 선택하세요.</p>`;
-    form.hidden = true;
+async function approveSettlementRequest() {
+  const uuid = (document.getElementById("settlement-uuid-input")?.value || "").trim();
+  if (!uuid) {
+    setMembershipStatus("settlement-action-status", "정산 UUID를 입력해주세요.", false);
     return;
   }
-  title.textContent = room.title;
-  meta.textContent = `참여자: ${(room.members || []).join(", ") || "—"}`;
-  status.textContent = room.status === "REPORTED" ? "신고됨" : "정상";
-  status.className = `badge ${room.status === "REPORTED" ? "bad" : "ok"}`;
-  form.hidden = false;
-  const messages = room.messages || [];
-  box.innerHTML = messages.length
-    ? messages
-        .map(
-          (m) => `
-      <div class="chat-bubble ${m.side || "them"}">
-        ${m.side === "admin" ? `[관리자 메모] ${m.text}` : `<b>${m.from || ""}</b><br>${m.text || ""}`}
-        <small>${m.at || ""}</small>
-      </div>`
-        )
-        .join("")
-    : `<p class="empty">메시지가 없습니다.</p>`;
-  box.scrollTop = box.scrollHeight;
+  try {
+    const res = await api(`/api/admin/memberships/settlements/${encodeURIComponent(uuid)}/approve`, { method: "POST" });
+    setMembershipStatus("settlement-action-status", `승인 완료 (상태: ${res?.status || "APPROVED"})`, true);
+  } catch (ex) {
+    setMembershipStatus("settlement-action-status", ex.message || "승인 처리에 실패했습니다.", false);
+  }
 }
 
-async function loadChat() {
-  chatRoomsCache = [];
+async function paySettlementRequest() {
+  const uuid = (document.getElementById("settlement-uuid-input")?.value || "").trim();
+  if (!uuid) {
+    setMembershipStatus("settlement-action-status", "정산 UUID를 입력해주세요.", false);
+    return;
+  }
   try {
-    const data = await api("/api/admin/chats");
-    chatRoomsCache = Array.isArray(data) ? data : data?.content || [];
+    const res = await api(`/api/admin/memberships/settlements/${encodeURIComponent(uuid)}/pay`, { method: "POST" });
+    setMembershipStatus("settlement-action-status", `지급 완료 (상태: ${res?.status || "PAID"})`, true);
+  } catch (ex) {
+    setMembershipStatus("settlement-action-status", ex.message || "지급 처리에 실패했습니다.", false);
+  }
+}
+
+function showMembershipRejectError(msg) {
+  const err = document.getElementById("membership-reject-error");
+  if (!err) return;
+  err.textContent = msg || "";
+  err.hidden = !msg;
+}
+
+function openMembershipRejectModal(kind, uuid, label) {
+  if (!uuid) {
+    setMembershipStatus(
+      kind === "application" ? "membership-action-status" : "settlement-action-status",
+      kind === "application" ? "멤버십 UUID를 입력해주세요." : "정산 UUID를 입력해주세요.",
+      false
+    );
+    return;
+  }
+  membershipRejectTarget = { kind, uuid };
+  showMembershipRejectError("");
+  const modal = document.getElementById("membership-reject-modal");
+  const target = document.getElementById("membership-reject-target");
+  const reason = document.getElementById("membership-reject-reason");
+  if (target) target.textContent = label || uuid;
+  if (reason) reason.value = "";
+  if (modal) {
+    modal.hidden = false;
+    modal.classList.add("is-open");
+    modal.setAttribute("aria-hidden", "false");
+  }
+  reason?.focus();
+}
+
+function closeMembershipRejectModal() {
+  membershipRejectTarget = null;
+  const modal = document.getElementById("membership-reject-modal");
+  if (modal) {
+    modal.classList.remove("is-open");
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+  }
+  showMembershipRejectError("");
+}
+
+async function confirmMembershipReject() {
+  if (!membershipRejectTarget) return;
+  const rejectReason = (document.getElementById("membership-reject-reason")?.value || "").trim();
+  if (!rejectReason) {
+    showMembershipRejectError("거절 사유를 입력해주세요.");
+    return;
+  }
+  const confirmBtn = document.getElementById("btn-membership-reject-confirm");
+  if (confirmBtn) confirmBtn.disabled = true;
+  showMembershipRejectError("");
+  try {
+    const { kind, uuid } = membershipRejectTarget;
+    const path =
+      kind === "application"
+        ? `/api/admin/memberships/${encodeURIComponent(uuid)}/reject`
+        : `/api/admin/memberships/settlements/${encodeURIComponent(uuid)}/reject`;
+    const res = await api(path, { method: "POST", body: JSON.stringify({ rejectReason }) });
+    closeMembershipRejectModal();
+    setMembershipStatus(
+      kind === "application" ? "membership-action-status" : "settlement-action-status",
+      `거절 완료 (상태: ${res?.status || "REJECTED"})`,
+      true
+    );
+  } catch (ex) {
+    showMembershipRejectError(ex.message || "거절 처리에 실패했습니다.");
+  } finally {
+    if (confirmBtn) confirmBtn.disabled = false;
+  }
+}
+
+async function loadLoginHistory() {
+  const type = document.getElementById("login-history-actor-type")?.value || "";
+  const actorId = document.getElementById("login-history-actor-id")?.value || "";
+  const params = new URLSearchParams({ size: "50" });
+  if (type) params.set("actorType", type);
+  if (actorId) params.set("actorId", actorId);
+  const body = document.getElementById("login-history-body");
+  const empty = document.getElementById("login-history-empty");
+  try {
+    const data = await api(`/api/admin/login-histories?${params}`);
+    const rows = data?.content || [];
+    body.innerHTML = rows
+      .map(
+        (r) => `<tr>
+      <td>${r.id}</td><td>${escapeHtml(r.actorType || "")}</td><td>${r.actorId ?? "—"}</td>
+      <td>${escapeHtml(r.ipAddress || "—")}</td><td>${escapeHtml(r.deviceInfo || "—")}</td>
+      <td class="cell-wrap">${escapeHtml(r.userAgent || "—")}</td><td>${fmtDt(r.createdAt)}</td>
+    </tr>`
+      )
+      .join("");
+    empty.hidden = rows.length > 0;
+    empty.textContent = "이력이 없습니다.";
+  } catch (e) {
+    body.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = e.message || "불러오기 실패";
+  }
+}
+
+async function loadActionHistory() {
+  const type = document.getElementById("action-history-type")?.value || "";
+  const params = new URLSearchParams({ size: "50" });
+  if (type) params.set("actionType", type);
+  const body = document.getElementById("action-history-body");
+  const empty = document.getElementById("action-history-empty");
+  try {
+    const data = await api(`/api/admin/action-histories?${params}`);
+    const rows = data?.content || [];
+    body.innerHTML = rows
+      .map(
+        (r) => `<tr>
+      <td>${r.id}</td><td>${escapeHtml(r.adminLoginId || String(r.adminId || ""))}</td>
+      <td>${escapeHtml(r.actionType || "")}</td>
+      <td>${escapeHtml((r.targetType || "") + (r.targetId ? ":" + r.targetId : ""))}</td>
+      <td class="cell-wrap">${escapeHtml(r.summary || "—")}</td>
+      <td>${escapeHtml(r.ipAddress || "—")}</td><td>${fmtDt(r.createdAt)}</td>
+    </tr>`
+      )
+      .join("");
+    empty.hidden = rows.length > 0;
+    empty.textContent = "행동 내역이 없습니다.";
+  } catch (e) {
+    body.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = e.message || "불러오기 실패";
+  }
+}
+
+async function loadNotifications() {
+  const channel = document.getElementById("notification-channel-filter")?.value || "";
+  const params = new URLSearchParams({ size: "50" });
+  if (channel) params.set("channel", channel);
+  const body = document.getElementById("notifications-body");
+  const empty = document.getElementById("notifications-empty");
+  try {
+    const data = await api(`/api/admin/notifications?${params}`);
+    const rows = data?.content || [];
+    body.innerHTML = rows
+      .map(
+        (r) => `<tr>
+      <td>${r.id}</td><td>${escapeHtml(r.channel || "")}</td>
+      <td>${escapeHtml((r.targetType || "") + (r.targetId ? ":" + r.targetId : ""))}</td>
+      <td>${escapeHtml(r.title || "")}</td>
+      <td class="cell-wrap">${escapeHtml(r.body || "")}</td>
+      <td>${escapeHtml(r.status || "")}</td>
+      <td>${escapeHtml(r.adminLoginId || "")}</td>
+      <td>${fmtDt(r.createdAt)}</td>
+    </tr>`
+      )
+      .join("");
+    empty.hidden = rows.length > 0;
+    empty.textContent = "발송 이력이 없습니다.";
+  } catch (e) {
+    body.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = e.message || "불러오기 실패";
+  }
+}
+
+async function loadMyProfile() {
+  try {
+    const me = await api("/api/admin/auth/me");
+    if (me?.name) {
+      document.getElementById("admin-name").textContent = me.name;
+      sessionStorage.setItem(NAME_KEY, me.name);
+    }
+    myRole = me?.role || "";
+    myPermissions = new Set(Array.isArray(me?.permissions) ? me.permissions : []);
   } catch {
-    chatRoomsCache = [];
+    /* ignore */
   }
-  if (selectedChatRoomId && !chatRoomsCache.some((r) => String(r.id) === String(selectedChatRoomId))) {
-    selectedChatRoomId = "";
-  }
-  renderChatRooms();
-  renderChatThread(selectedChatRoomId);
 }
 
 document.querySelectorAll(".side__nav button").forEach((btn) => {
@@ -496,27 +1354,334 @@ window.addEventListener("resize", () => {
 });
 document.getElementById("btn-users-reload")?.addEventListener("click", loadUsers);
 document.getElementById("btn-stories-reload")?.addEventListener("click", loadStories);
+document.getElementById("btn-comments-reload")?.addEventListener("click", loadComments);
 document.getElementById("btn-banned-reload")?.addEventListener("click", loadBanned);
-document.getElementById("btn-chat-reload")?.addEventListener("click", loadChat);
-document.getElementById("chat-room-q")?.addEventListener("input", renderChatRooms);
-document.getElementById("chat-room-list")?.addEventListener("click", (e) => {
-  const btn = e.target.closest(".chat-room");
-  if (!btn) return;
-  selectedChatRoomId = btn.dataset.roomId;
-  renderChatRooms();
-  renderChatThread(selectedChatRoomId);
+document.getElementById("btn-chat-rooms-reload")?.addEventListener("click", loadChatRoomReports);
+document.getElementById("btn-chat-messages-reload")?.addEventListener("click", loadChatMessageReports);
+document.getElementById("btn-admins-reload")?.addEventListener("click", loadAdmins);
+document.getElementById("btn-notifications-reload")?.addEventListener("click", loadNotifications);
+document.getElementById("btn-login-history-reload")?.addEventListener("click", loadLoginHistory);
+document.getElementById("btn-action-history-reload")?.addEventListener("click", loadActionHistory);
+
+document.getElementById("story-q")?.addEventListener("input", renderStories);
+document.getElementById("story-status-filter")?.addEventListener("change", renderStories);
+document.getElementById("story-sort")?.addEventListener("change", loadStories);
+document.getElementById("comment-q")?.addEventListener("input", renderComments);
+document.getElementById("comment-status-filter")?.addEventListener("change", renderComments);
+document.getElementById("comment-sort")?.addEventListener("change", renderComments);
+document.getElementById("chat-room-report-status")?.addEventListener("change", loadChatRoomReports);
+document.getElementById("chat-msg-report-status")?.addEventListener("change", loadChatMessageReports);
+document.getElementById("login-history-actor-type")?.addEventListener("change", loadLoginHistory);
+document.getElementById("login-history-actor-id")?.addEventListener("change", loadLoginHistory);
+document.getElementById("action-history-type")?.addEventListener("change", loadActionHistory);
+
+document.getElementById("page-users")?.addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-action]");
+  if (btn && document.getElementById("users-body")?.contains(btn)) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const tr = btn.closest("tr");
+    let user = {};
+    try {
+      user = JSON.parse(tr?.dataset.user || "{}");
+    } catch {
+      user = {};
+    }
+    const key = btn.dataset.key || userApiKey(user) || btn.dataset.memberNo || "";
+    if (!key) {
+      const statusEl = document.getElementById("users-status");
+      if (statusEl) {
+        statusEl.textContent = "회원 식별값이 없어 처리할 수 없습니다. 목록을 새로고침해 주세요.";
+        statusEl.style.color = "var(--danger)";
+      }
+      return;
+    }
+    user.memberUuid = user.memberUuid || user.id || null;
+    user.memberNo = user.memberNo ?? btn.dataset.memberNo ?? null;
+
+    if (btn.dataset.action === "suspend") {
+      openSuspendModal({
+        ...user,
+        memberNo: user.memberNo ?? btn.dataset.memberNo ?? null,
+        memberUuid: user.memberUuid || user.id || null,
+      });
+      return;
+    }
+    if (btn.dataset.action === "unsuspend") {
+      const memberNo = user.memberNo != null ? Number(user.memberNo) : Number(btn.dataset.memberNo);
+      const memberUuid = user.memberUuid || user.id || null;
+      try {
+        await api("/api/admin/users/unsuspend", {
+          method: "POST",
+          body: JSON.stringify({
+            memberNo: Number.isFinite(memberNo) ? memberNo : null,
+            memberUuid: memberUuid || null,
+          }),
+        });
+        loadUsers();
+      } catch (ex) {
+        const statusEl = document.getElementById("users-status");
+        if (statusEl) {
+          statusEl.textContent = ex.message || "정지 해제에 실패했습니다.";
+          statusEl.style.color = "var(--danger)";
+        }
+      }
+    }
+    return;
+  }
+
+  const row = e.target.closest("#users-body tr.is-clickable");
+  if (!row) return;
+  let user = {};
+  try {
+    user = JSON.parse(row.dataset.user || "{}");
+  } catch {
+    user = {};
+  }
+  const userId = user.memberUuid || user.id;
+  if (!userId) {
+    const statusEl = document.getElementById("users-status");
+    if (statusEl) {
+      statusEl.textContent = "회원 UUID가 없어 상세를 열 수 없습니다.";
+      statusEl.style.color = "var(--danger)";
+    }
+    return;
+  }
+  openUserDetail(userId);
 });
-document.getElementById("form-chat-note")?.addEventListener("submit", (e) => {
+
+document.getElementById("btn-user-detail-close")?.addEventListener("click", closeUserDetailModal);
+document.getElementById("user-detail-modal")?.addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeUserDetailModal();
+});
+document.getElementById("user-detail-body")?.addEventListener("click", async (e) => {
+  const payBtn = e.target.closest("button[data-pay-filter]");
+  if (payBtn && userDetailCache) {
+    paymentTotalFilter = payBtn.dataset.payFilter || "all";
+    renderUserDetail(userDetailCache);
+    return;
+  }
+  const actionBtn = e.target.closest("button[data-detail-action]");
+  if (!actionBtn || !userDetailCache?.id) return;
+  const userId = userDetailCache.id;
+  const action = actionBtn.dataset.detailAction;
+  actionBtn.disabled = true;
+  try {
+    if (action === "settle") {
+      const res = await api(`/api/admin/users/${encodeURIComponent(userId)}/membership/settle`, {
+        method: "POST",
+        body: "{}",
+      });
+      showUserDetailError("");
+      const statusEl = document.getElementById("user-detail-status");
+      if (statusEl) {
+        statusEl.textContent = res?.message || "정산을 요청했습니다.";
+        statusEl.style.color = "var(--ok)";
+      }
+      await reloadUserDetail();
+    } else if (action === "nudge-email" || action === "nudge-sms") {
+      const channel = action === "nudge-sms" ? "SMS" : "EMAIL";
+      const res = await api(`/api/admin/users/${encodeURIComponent(userId)}/membership/nudge`, {
+        method: "POST",
+        body: JSON.stringify({ channel }),
+      });
+      showUserDetailError("");
+      const statusEl = document.getElementById("user-detail-status");
+      if (statusEl) {
+        statusEl.textContent = res?.message || "독촉을 발송 요청했습니다.";
+        statusEl.style.color = "var(--ok)";
+      }
+    } else if (action === "delete-comment") {
+      const commentId = actionBtn.dataset.commentId;
+      await api(`/api/admin/users/${encodeURIComponent(userId)}/reported-comments/${encodeURIComponent(commentId)}`, {
+        method: "DELETE",
+      });
+      const statusEl = document.getElementById("user-detail-status");
+      if (statusEl) {
+        statusEl.textContent = "신고 댓글을 삭제했습니다.";
+        statusEl.style.color = "var(--ok)";
+      }
+      await reloadUserDetail();
+    }
+  } catch (ex) {
+    showUserDetailError(ex.message || "요청에 실패했습니다.");
+  } finally {
+    if (action !== "delete-comment" || document.getElementById("user-detail-body")?.contains(actionBtn)) {
+      actionBtn.disabled = false;
+    }
+  }
+});
+
+document.getElementById("btn-suspend-cancel")?.addEventListener("click", (e) => {
   e.preventDefault();
-  const text = e.target.note.value.trim();
-  if (!text || !selectedChatRoomId) return;
-  saveChatNote(selectedChatRoomId, text);
-  e.target.reset();
-  renderChatThread(selectedChatRoomId);
+  closeSuspendModal();
 });
+
+document.getElementById("btn-suspend-confirm")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  confirmSuspend();
+});
+
+document.getElementById("suspend-modal")?.addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeSuspendModal();
+});
+
+document.getElementById("suspend-period")?.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-days]");
+  if (!btn) return;
+  e.preventDefault();
+  suspendPeriod = btn.dataset.days;
+  document.querySelectorAll("#suspend-period button").forEach((b) => {
+    b.classList.toggle("is-active", b === btn);
+  });
+  const until = document.getElementById("suspend-until");
+  if (until) {
+    if (suspendPeriod === "custom") {
+      until.classList.remove("is-hidden");
+      if (!until.value) {
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        until.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      }
+    } else {
+      until.classList.add("is-hidden");
+    }
+  }
+});
+document.getElementById("form-create-admin")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const status = document.getElementById("admins-status");
+  try {
+    await api("/api/admin/accounts", {
+      method: "POST",
+      body: JSON.stringify({
+        adminId: String(fd.get("adminId") || "").trim(),
+        password: String(fd.get("password") || ""),
+        name: String(fd.get("name") || "").trim(),
+        role: String(fd.get("role") || "ADMIN"),
+        permissions: fd.getAll("permissions"),
+      }),
+    });
+    e.target.reset();
+    status.textContent = "관리자 계정을 추가했습니다.";
+    status.style.color = "var(--ok)";
+    loadAdmins();
+  } catch (ex) {
+    status.textContent = ex.message || "추가 실패";
+    status.style.color = "var(--danger)";
+  }
+});
+
+document.getElementById("page-admins")?.addEventListener("click", async (e) => {
+  const permBtn = e.target.closest("[data-admin-perm]");
+  if (permBtn) {
+    const admin = lastAdminRows.find((a) => String(a.id) === permBtn.dataset.adminPerm);
+    if (admin) openAdminPermModal(admin);
+    return;
+  }
+  const btn = e.target.closest("[data-admin-toggle]");
+  if (!btn) return;
+  const status = document.getElementById("admins-status");
+  try {
+    await api(`/api/admin/accounts/${btn.dataset.adminToggle}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: btn.dataset.status }),
+    });
+    status.textContent = "상태를 변경했습니다.";
+    status.style.color = "var(--ok)";
+    loadAdmins();
+  } catch (ex) {
+    status.textContent = ex.message || "상태 변경 실패";
+    status.style.color = "var(--danger)";
+  }
+});
+
+document.getElementById("create-admin-role")?.addEventListener("change", (e) => {
+  const perms = document.getElementById("create-admin-perms");
+  perms?.classList.toggle("is-disabled", e.target.value === "SUPER_ADMIN");
+});
+
+document.getElementById("btn-admin-perm-cancel")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  closeAdminPermModal();
+});
+
+document.getElementById("btn-admin-perm-save")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  saveAdminPermissions();
+});
+
+document.getElementById("admin-perm-modal")?.addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeAdminPermModal();
+});
+
+document.getElementById("btn-membership-approve")?.addEventListener("click", approveMembershipApplication);
+document.getElementById("btn-membership-reject-open")?.addEventListener("click", () => {
+  const uuid = (document.getElementById("membership-uuid-input")?.value || "").trim();
+  openMembershipRejectModal("application", uuid, uuid);
+});
+
+document.getElementById("btn-settlement-approve")?.addEventListener("click", approveSettlementRequest);
+document.getElementById("btn-settlement-pay")?.addEventListener("click", paySettlementRequest);
+document.getElementById("btn-settlement-reject-open")?.addEventListener("click", () => {
+  const uuid = (document.getElementById("settlement-uuid-input")?.value || "").trim();
+  openMembershipRejectModal("settlement", uuid, uuid);
+});
+
+document.getElementById("btn-membership-reject-cancel")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  closeMembershipRejectModal();
+});
+
+document.getElementById("btn-membership-reject-confirm")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  confirmMembershipReject();
+});
+
+document.getElementById("membership-reject-modal")?.addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeMembershipRejectModal();
+});
+
+document.getElementById("form-notification")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const status = document.getElementById("notification-status");
+  try {
+    const res = await api("/api/admin/notifications", {
+      method: "POST",
+      body: JSON.stringify({
+        channel: String(fd.get("channel") || "NOTICE"),
+        targetType: String(fd.get("targetType") || "ALL"),
+        targetId: String(fd.get("targetId") || "").trim() || null,
+        title: String(fd.get("title") || "").trim(),
+        body: String(fd.get("body") || "").trim(),
+      }),
+    });
+    status.textContent = `${res?.channel === "NOTICE" ? "공지" : "푸시"} 발송이 접수되었습니다.`;
+    status.style.color = "var(--ok)";
+    e.target.reset();
+    loadNotifications();
+  } catch (ex) {
+    status.textContent = ex.message || "발송 실패";
+    status.style.color = "var(--danger)";
+  }
+});
+
+document.getElementById("notification-channel-filter")?.addEventListener("change", loadNotifications);
+
+document.getElementById("suspend-notify")?.addEventListener("change", (e) => {
+  const fields = document.getElementById("suspend-notify-fields");
+  if (!fields) return;
+  fields.classList.toggle("is-hidden", !e.target.checked);
+});
+
 document.getElementById("user-q")?.addEventListener("input", loadUsers);
 document.getElementById("user-status-filter")?.addEventListener("change", loadUsers);
 document.getElementById("user-type-filter")?.addEventListener("change", loadUsers);
+document.getElementById("user-sort")?.addEventListener("change", loadUsers);
 document.getElementById("grade-bar")?.addEventListener("click", (e) => {
   const chip = e.target.closest(".grade-chip");
   if (!chip) return;
@@ -561,4 +1726,4 @@ document.getElementById("banned-body")?.addEventListener("click", async (e) => {
   }
 });
 
-setPage("dashboard");
+loadMyProfile().finally(() => setPage("dashboard"));
