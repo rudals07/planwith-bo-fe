@@ -1128,7 +1128,7 @@ async function loadMemberships() {
     const rows = data?.content || [];
     body.innerHTML = rows
       .map((r) => {
-        const canAct = r.status === "REQUESTED";
+        const canAct = r.status === "PENDING";
         return `<tr>
       <td>${fmtDt(r.createdAt)}</td><td class="cell-wrap">${escapeHtml(r.creatorUuid || "—")}</td>
       <td>${escapeHtml(r.membershipName || "—")}</td><td>${money(r.monthlyPrice)}</td>
