@@ -130,6 +130,10 @@ function setPage(page) {
   if (page === "chat-messages") loadChatMessageReports();
   if (page === "banned") loadBanned();
   if (page === "admins") loadAdmins();
+  if (page === "membership") {
+    loadMemberships();
+    loadSettlements();
+  }
   if (page === "notifications") loadNotifications();
   if (page === "login-history") loadLoginHistory();
   if (page === "action-history") loadActionHistory();
@@ -1113,43 +1117,100 @@ function setMembershipStatus(elId, msg, ok) {
   el.style.color = ok === undefined ? "" : ok ? "var(--ok)" : "var(--danger)";
 }
 
-async function approveMembershipApplication() {
-  const uuid = (document.getElementById("membership-uuid-input")?.value || "").trim();
-  if (!uuid) {
-    setMembershipStatus("membership-action-status", "멤버십 UUID를 입력해주세요.", false);
-    return;
+async function loadMemberships() {
+  const status = document.getElementById("membership-status-filter")?.value || "";
+  const params = new URLSearchParams({ size: "50" });
+  if (status) params.set("status", status);
+  const body = document.getElementById("membership-body");
+  const empty = document.getElementById("membership-empty");
+  try {
+    const data = await api(`/api/admin/memberships?${params}`);
+    const rows = data?.content || [];
+    body.innerHTML = rows
+      .map((r) => {
+        const canAct = r.status === "REQUESTED";
+        return `<tr>
+      <td>${fmtDt(r.createdAt)}</td><td class="cell-wrap">${escapeHtml(r.creatorUuid || "—")}</td>
+      <td>${escapeHtml(r.membershipName || "—")}</td><td>${money(r.monthlyPrice)}</td>
+      <td>${escapeHtml(r.status || "—")}</td><td class="cell-wrap">${escapeHtml(r.adminUuid || "—")}</td>
+      <td class="cell-wrap">${escapeHtml(r.rejectReason || "—")}</td>
+      <td><div class="row-actions">
+        <button type="button" data-action="approve" data-uuid="${r.membershipUuid}" ${canAct ? "" : "disabled"}>승인</button>
+        <button type="button" class="danger" data-action="reject" data-uuid="${r.membershipUuid}" data-label="${escapeHtml(r.membershipName || r.membershipUuid)}" ${canAct ? "" : "disabled"}>거절</button>
+      </div></td>
+    </tr>`;
+      })
+      .join("");
+    empty.hidden = rows.length > 0;
+    empty.textContent = "신청 내역이 없습니다.";
+  } catch (e) {
+    body.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = e.message || "불러오기 실패";
   }
+}
+
+async function loadSettlements() {
+  const status = document.getElementById("settlement-status-filter")?.value || "";
+  const params = new URLSearchParams({ size: "50" });
+  if (status) params.set("status", status);
+  const body = document.getElementById("settlement-body");
+  const empty = document.getElementById("settlement-empty");
+  try {
+    const data = await api(`/api/admin/memberships/settlements?${params}`);
+    const rows = data?.content || [];
+    body.innerHTML = rows
+      .map((r) => {
+        const canApprove = r.settlementStatus === "REQUESTED";
+        const canPay = r.settlementStatus === "APPROVED";
+        return `<tr>
+      <td>${fmtDt(r.requestedAt)}</td><td class="cell-wrap">${escapeHtml(r.creatorUuid || "—")}</td>
+      <td>${money(r.settlementAmount)}</td><td>${escapeHtml(r.settlementStatus || "—")}</td>
+      <td>${fmtDt(r.approvedAt)}</td><td>${fmtDt(r.paidAt)}</td>
+      <td class="cell-wrap">${escapeHtml(r.adminUuid || "—")}</td>
+      <td class="cell-wrap">${escapeHtml(r.rejectReason || "—")}</td>
+      <td><div class="row-actions">
+        <button type="button" data-action="approve" data-uuid="${r.settlementUuid}" ${canApprove ? "" : "disabled"}>승인</button>
+        <button type="button" class="danger" data-action="reject" data-uuid="${r.settlementUuid}" data-label="${escapeHtml(r.settlementUuid)}" ${canApprove ? "" : "disabled"}>거절</button>
+        <button type="button" data-action="pay" data-uuid="${r.settlementUuid}" ${canPay ? "" : "disabled"}>지급완료</button>
+      </div></td>
+    </tr>`;
+      })
+      .join("");
+    empty.hidden = rows.length > 0;
+    empty.textContent = "정산 요청이 없습니다.";
+  } catch (e) {
+    body.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = e.message || "불러오기 실패";
+  }
+}
+
+async function approveMembershipApplication(uuid) {
   try {
     const res = await api(`/api/admin/memberships/${encodeURIComponent(uuid)}/approve`, { method: "POST" });
     setMembershipStatus("membership-action-status", `승인 완료 (상태: ${res?.status || "APPROVED"})`, true);
+    loadMemberships();
   } catch (ex) {
     setMembershipStatus("membership-action-status", ex.message || "승인 처리에 실패했습니다.", false);
   }
 }
 
-async function approveSettlementRequest() {
-  const uuid = (document.getElementById("settlement-uuid-input")?.value || "").trim();
-  if (!uuid) {
-    setMembershipStatus("settlement-action-status", "정산 UUID를 입력해주세요.", false);
-    return;
-  }
+async function approveSettlementRequest(uuid) {
   try {
     const res = await api(`/api/admin/memberships/settlements/${encodeURIComponent(uuid)}/approve`, { method: "POST" });
     setMembershipStatus("settlement-action-status", `승인 완료 (상태: ${res?.status || "APPROVED"})`, true);
+    loadSettlements();
   } catch (ex) {
     setMembershipStatus("settlement-action-status", ex.message || "승인 처리에 실패했습니다.", false);
   }
 }
 
-async function paySettlementRequest() {
-  const uuid = (document.getElementById("settlement-uuid-input")?.value || "").trim();
-  if (!uuid) {
-    setMembershipStatus("settlement-action-status", "정산 UUID를 입력해주세요.", false);
-    return;
-  }
+async function paySettlementRequest(uuid) {
   try {
     const res = await api(`/api/admin/memberships/settlements/${encodeURIComponent(uuid)}/pay`, { method: "POST" });
     setMembershipStatus("settlement-action-status", `지급 완료 (상태: ${res?.status || "PAID"})`, true);
+    loadSettlements();
   } catch (ex) {
     setMembershipStatus("settlement-action-status", ex.message || "지급 처리에 실패했습니다.", false);
   }
@@ -1166,7 +1227,7 @@ function openMembershipRejectModal(kind, uuid, label) {
   if (!uuid) {
     setMembershipStatus(
       kind === "application" ? "membership-action-status" : "settlement-action-status",
-      kind === "application" ? "멤버십 UUID를 입력해주세요." : "정산 UUID를 입력해주세요.",
+      "처리할 항목을 찾을 수 없습니다.",
       false
     );
     return;
@@ -1220,6 +1281,8 @@ async function confirmMembershipReject() {
       `거절 완료 (상태: ${res?.status || "REJECTED"})`,
       true
     );
+    if (kind === "application") loadMemberships();
+    else loadSettlements();
   } catch (ex) {
     showMembershipRejectError(ex.message || "거절 처리에 실패했습니다.");
   } finally {
@@ -1618,17 +1681,25 @@ document.getElementById("admin-perm-modal")?.addEventListener("click", (e) => {
   if (e.target === e.currentTarget) closeAdminPermModal();
 });
 
-document.getElementById("btn-membership-approve")?.addEventListener("click", approveMembershipApplication);
-document.getElementById("btn-membership-reject-open")?.addEventListener("click", () => {
-  const uuid = (document.getElementById("membership-uuid-input")?.value || "").trim();
-  openMembershipRejectModal("application", uuid, uuid);
+document.getElementById("btn-membership-reload")?.addEventListener("click", loadMemberships);
+document.getElementById("membership-status-filter")?.addEventListener("change", loadMemberships);
+document.getElementById("membership-body")?.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-action]");
+  if (!btn) return;
+  const { action, uuid, label } = btn.dataset;
+  if (action === "approve") approveMembershipApplication(uuid);
+  if (action === "reject") openMembershipRejectModal("application", uuid, label);
 });
 
-document.getElementById("btn-settlement-approve")?.addEventListener("click", approveSettlementRequest);
-document.getElementById("btn-settlement-pay")?.addEventListener("click", paySettlementRequest);
-document.getElementById("btn-settlement-reject-open")?.addEventListener("click", () => {
-  const uuid = (document.getElementById("settlement-uuid-input")?.value || "").trim();
-  openMembershipRejectModal("settlement", uuid, uuid);
+document.getElementById("btn-settlement-reload")?.addEventListener("click", loadSettlements);
+document.getElementById("settlement-status-filter")?.addEventListener("change", loadSettlements);
+document.getElementById("settlement-body")?.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-action]");
+  if (!btn) return;
+  const { action, uuid, label } = btn.dataset;
+  if (action === "approve") approveSettlementRequest(uuid);
+  if (action === "pay") paySettlementRequest(uuid);
+  if (action === "reject") openMembershipRejectModal("settlement", uuid, label);
 });
 
 document.getElementById("btn-membership-reject-cancel")?.addEventListener("click", (e) => {
