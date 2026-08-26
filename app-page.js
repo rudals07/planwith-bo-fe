@@ -1088,6 +1088,10 @@ async function saveAdminPermissions() {
   const checked = Array.from(
     document.querySelectorAll("#admin-perm-checks input[type=checkbox]:checked")
   ).map((el) => el.value);
+  if (checked.length === 0) {
+    showAdminPermError("권한을 하나 이상 선택해주세요.");
+    return;
+  }
   const saveBtn = document.getElementById("btn-admin-perm-save");
   if (saveBtn) saveBtn.disabled = true;
   showAdminPermError("");
@@ -1617,6 +1621,13 @@ document.getElementById("form-create-admin")?.addEventListener("submit", async (
   e.preventDefault();
   const fd = new FormData(e.target);
   const status = document.getElementById("admins-status");
+  const role = String(fd.get("role") || "ADMIN");
+  const permissions = fd.getAll("permissions");
+  if (role !== "SUPER_ADMIN" && permissions.length === 0) {
+    status.textContent = "권한을 하나 이상 선택해주세요.";
+    status.style.color = "var(--danger)";
+    return;
+  }
   try {
     await api("/api/admin/accounts", {
       method: "POST",
@@ -1624,8 +1635,8 @@ document.getElementById("form-create-admin")?.addEventListener("submit", async (
         adminId: String(fd.get("adminId") || "").trim(),
         password: String(fd.get("password") || ""),
         name: String(fd.get("name") || "").trim(),
-        role: String(fd.get("role") || "ADMIN"),
-        permissions: fd.getAll("permissions"),
+        role,
+        permissions,
       }),
     });
     e.target.reset();
