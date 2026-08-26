@@ -293,35 +293,60 @@
       <section id="page-membership" class="page is-hidden">
         <div class="panel dash-head">
           <div>
-            <h2>멤버십 신청·정산 처리</h2>
-            <p class="muted">planwith-fo-membership 서비스에 승인·거절·지급 요청을 대행 전달합니다</p>
+            <h2>멤버십 신청 심사</h2>
+            <p class="muted">planwith-fo-membership 서비스(membership_db)의 신청 목록을 읽어와 승인·거절을 대행 전달합니다</p>
           </div>
+          <button type="button" id="btn-membership-reload" class="ghost-btn">새로고침</button>
         </div>
-        <p class="muted" id="membership-notice">
-          아직 membership 서비스에 신청·정산 <strong>목록 조회 API가 없어</strong>, 처리할 UUID를 직접 입력해야 합니다.
-          (FO 쪽에서 신청·정산 요청 시 안내되는 UUID를 사용하세요.)
-        </p>
+        <div class="toolbar toolbar--filters">
+          <select id="membership-status-filter">
+            <option value="">전체</option>
+            <option value="REQUESTED">심사중</option>
+            <option value="APPROVED">승인</option>
+            <option value="REJECTED">거절</option>
+          </select>
+        </div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>신청일시</th><th>크리에이터</th><th>멤버십명</th><th>월 가격</th><th>상태</th><th>처리자</th><th>거절사유</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="membership-body"></tbody>
+          </table>
+          <p class="empty" id="membership-empty" hidden>신청 내역이 없습니다.</p>
+        </div>
+        <p class="muted" id="membership-action-status"></p>
 
-        <div class="panel form-stack">
-          <h2>멤버십 개설 신청 처리</h2>
-          <div class="toolbar toolbar--wrap">
-            <input id="membership-uuid-input" type="text" placeholder="멤버십 UUID" style="min-width:320px" />
-            <button type="button" id="btn-membership-approve">승인</button>
-            <button type="button" class="danger" id="btn-membership-reject-open">거절</button>
+        <div class="panel dash-head">
+          <div>
+            <h2>정산 요청 처리</h2>
+            <p class="muted">승인(APPROVED) → 실제 지급 후 지급 완료(PAID) 순서로 처리합니다</p>
           </div>
-          <p class="muted" id="membership-action-status"></p>
+          <button type="button" id="btn-settlement-reload" class="ghost-btn">새로고침</button>
         </div>
-
-        <div class="panel form-stack">
-          <h2>정산 요청 처리</h2>
-          <div class="toolbar toolbar--wrap">
-            <input id="settlement-uuid-input" type="text" placeholder="정산 UUID" style="min-width:320px" />
-            <button type="button" id="btn-settlement-approve">승인</button>
-            <button type="button" class="danger" id="btn-settlement-reject-open">거절</button>
-            <button type="button" id="btn-settlement-pay">지급 처리</button>
-          </div>
-          <p class="muted" id="settlement-action-status"></p>
+        <div class="toolbar toolbar--filters">
+          <select id="settlement-status-filter">
+            <option value="">전체</option>
+            <option value="REQUESTED">요청됨</option>
+            <option value="APPROVED">승인됨</option>
+            <option value="PAID">지급완료</option>
+            <option value="REJECTED">거절됨</option>
+          </select>
         </div>
+        <div class="panel table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>요청일시</th><th>크리에이터</th><th>금액</th><th>상태</th><th>승인일시</th><th>지급일시</th><th>처리자</th><th>거절사유</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="settlement-body"></tbody>
+          </table>
+          <p class="empty" id="settlement-empty" hidden>정산 요청이 없습니다.</p>
+        </div>
+        <p class="muted" id="settlement-action-status"></p>
       </section>
 
       <section id="page-notifications" class="page is-hidden">
