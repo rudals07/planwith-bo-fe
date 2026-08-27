@@ -583,6 +583,14 @@ function profileImageHtml(url) {
     onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'user-detail__avatar is-empty',textContent:'파일 없음'}))" />`;
 }
 
+function labelMembershipStatus(status) {
+  const s = String(status || "").toUpperCase();
+  if (s === "PENDING") return "심사중";
+  if (s === "APPROVED") return "승인됨";
+  if (s === "REJECTED") return "거절됨";
+  return status || "—";
+}
+
 function labelPaymentPath(path) {
   const p = String(path || "").toUpperCase();
   if (p === "EASY_PAY") return "간편 결제";
@@ -719,7 +727,7 @@ function renderUserDetail(detail) {
     <section class="user-detail__section">
       <h3>멤버십</h3>
       <dl class="user-detail__grid">
-        <div class="user-detail__item"><dt>멤버십 여부 (수익 신청)</dt><dd>${detail.membershipApplied ? "신청 완료" : "미신청"}</dd></div>
+        <div class="user-detail__item"><dt>멤버십 여부 (수익 신청)</dt><dd>${detail.membershipApplied ? `신청 완료 (${labelMembershipStatus(detail.membershipStatus)})` : "미신청"}</dd></div>
         <div class="user-detail__item"><dt>신청 가능 등급</dt><dd>${detail.membershipEligible ? "가능" : "불가"}</dd></div>
         <div class="user-detail__item"><dt>멤버십 수익</dt><dd>${money(detail.membershipRevenue)}</dd></div>
       </dl>
@@ -1088,6 +1096,10 @@ async function saveAdminPermissions() {
   const checked = Array.from(
     document.querySelectorAll("#admin-perm-checks input[type=checkbox]:checked")
   ).map((el) => el.value);
+  if (checked.length === 0) {
+    showAdminPermError("권한을 하나 이상 선택해주세요.");
+    return;
+  }
   const saveBtn = document.getElementById("btn-admin-perm-save");
   if (saveBtn) saveBtn.disabled = true;
   showAdminPermError("");
@@ -1128,15 +1140,15 @@ async function loadMemberships() {
     const rows = data?.content || [];
     body.innerHTML = rows
       .map((r) => {
-        const canAct = r.status === "REQUESTED";
+        const canAct = r.status === "PENDING";
         return `<tr>
       <td>${fmtDt(r.createdAt)}</td><td class="cell-wrap">${escapeHtml(r.creatorUuid || "—")}</td>
       <td>${escapeHtml(r.membershipName || "—")}</td><td>${money(r.monthlyPrice)}</td>
       <td>${escapeHtml(r.status || "—")}</td><td class="cell-wrap">${escapeHtml(r.adminUuid || "—")}</td>
       <td class="cell-wrap">${escapeHtml(r.rejectReason || "—")}</td>
       <td><div class="row-actions">
-        <button type="button" data-action="approve" data-uuid="${r.membershipUuid}" ${canAct ? "" : "disabled"}>승인</button>
-        <button type="button" class="danger" data-action="reject" data-uuid="${r.membershipUuid}" data-label="${escapeHtml(r.membershipName || r.membershipUuid)}" ${canAct ? "" : "disabled"}>거절</button>
+        ${canAct ? `<button type="button" data-action="approve" data-uuid="${r.membershipUuid}">승인</button>` : ""}
+        ${canAct ? `<button type="button" class="danger" data-action="reject" data-uuid="${r.membershipUuid}" data-label="${escapeHtml(r.membershipName || r.membershipUuid)}">거절</button>` : "—"}
       </div></td>
     </tr>`;
       })
@@ -1170,9 +1182,10 @@ async function loadSettlements() {
       <td class="cell-wrap">${escapeHtml(r.adminUuid || "—")}</td>
       <td class="cell-wrap">${escapeHtml(r.rejectReason || "—")}</td>
       <td><div class="row-actions">
-        <button type="button" data-action="approve" data-uuid="${r.settlementUuid}" ${canApprove ? "" : "disabled"}>승인</button>
-        <button type="button" class="danger" data-action="reject" data-uuid="${r.settlementUuid}" data-label="${escapeHtml(r.settlementUuid)}" ${canApprove ? "" : "disabled"}>거절</button>
-        <button type="button" data-action="pay" data-uuid="${r.settlementUuid}" ${canPay ? "" : "disabled"}>지급완료</button>
+        ${canApprove ? `<button type="button" data-action="approve" data-uuid="${r.settlementUuid}">승인</button>` : ""}
+        ${canApprove ? `<button type="button" class="danger" data-action="reject" data-uuid="${r.settlementUuid}" data-label="${escapeHtml(r.settlementUuid)}">거절</button>` : ""}
+        ${canPay ? `<button type="button" data-action="pay" data-uuid="${r.settlementUuid}">지급완료</button>` : ""}
+        ${!canApprove && !canPay ? "—" : ""}
       </div></td>
     </tr>`;
       })
@@ -1617,6 +1630,13 @@ document.getElementById("form-create-admin")?.addEventListener("submit", async (
   e.preventDefault();
   const fd = new FormData(e.target);
   const status = document.getElementById("admins-status");
+  const role = String(fd.get("role") || "ADMIN");
+  const permissions = fd.getAll("permissions");
+  if (role !== "SUPER_ADMIN" && permissions.length === 0) {
+    status.textContent = "권한을 하나 이상 선택해주세요.";
+    status.style.color = "var(--danger)";
+    return;
+  }
   try {
     await api("/api/admin/accounts", {
       method: "POST",
@@ -1624,8 +1644,8 @@ document.getElementById("form-create-admin")?.addEventListener("submit", async (
         adminId: String(fd.get("adminId") || "").trim(),
         password: String(fd.get("password") || ""),
         name: String(fd.get("name") || "").trim(),
-        role: String(fd.get("role") || "ADMIN"),
-        permissions: fd.getAll("permissions"),
+        role,
+        permissions,
       }),
     });
     e.target.reset();
