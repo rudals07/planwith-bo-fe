@@ -341,23 +341,36 @@ function groupCaption(group) {
   return { day: "일간 수입 추이", month: "월간 수입 추이", year: "연간 수입 추이", total: "전체 수입 추이 (연도별)" }[group] || "수입 추이";
 }
 
+function chartLayout(canvas, rows) {
+  const cssW = canvas.clientWidth || 960;
+  const cssH = 280;
+  const pad = { t: 24, r: 16, b: 40, l: 56 };
+  const w = cssW - pad.l - pad.r;
+  const h = cssH - pad.t - pad.b;
+  const max = Math.max(1, ...rows.map((r) => r.amount));
+  const gap = 8;
+  const step = w / (rows.length || 1);
+  const barW = Math.max(8, Math.min(48, (w - gap * (rows.length + 1)) / (rows.length || 1)));
+  return { cssW, cssH, pad, w, h, max, step, barW };
+}
+
 function drawRevenueChart(periods) {
   const canvas = document.getElementById("revenue-chart");
   const empty = document.getElementById("chart-empty");
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
-  const cssW = canvas.clientWidth || 960;
-  const cssH = 280;
-  canvas.width = Math.floor(cssW * dpr);
-  canvas.height = Math.floor(cssH * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, cssW, cssH);
 
   const rows = (periods || []).map((p) => ({
     period: String(p.period || ""),
     amount: Number(p.amount || 0),
   }));
+
+  const { cssW, cssH, pad, w, h, max, step, barW } = chartLayout(canvas, rows);
+  canvas.width = Math.floor(cssW * dpr);
+  canvas.height = Math.floor(cssH * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
 
   if (!rows.length || rows.every((r) => r.amount === 0)) {
     empty.hidden = false;
@@ -366,11 +379,6 @@ function drawRevenueChart(periods) {
     empty.hidden = true;
     canvas.style.opacity = "1";
   }
-
-  const pad = { t: 24, r: 16, b: 40, l: 56 };
-  const w = cssW - pad.l - pad.r;
-  const h = cssH - pad.t - pad.b;
-  const max = Math.max(1, ...rows.map((r) => r.amount));
 
   // axes
   ctx.strokeStyle = "#d7dee8";
@@ -396,10 +404,6 @@ function drawRevenueChart(periods) {
   }
 
   if (!rows.length) return;
-
-  const gap = 8;
-  const barW = Math.max(8, Math.min(48, (w - gap * (rows.length + 1)) / rows.length));
-  const step = w / rows.length;
 
   rows.forEach((r, i) => {
     const bh = (r.amount / max) * h;
@@ -1415,6 +1419,55 @@ document.getElementById("btn-logout").addEventListener("click", () => {
   sessionStorage.removeItem(NAME_KEY);
   window.location.replace("/");
 });
+
+function setupChartTooltip() {
+  const canvas = document.getElementById("revenue-chart");
+  const tip = document.getElementById("chart-tooltip");
+  if (!canvas || !tip) return;
+
+  const hide = () => {
+    tip.hidden = true;
+  };
+
+  canvas.addEventListener("mousemove", (e) => {
+    const rows = (lastRevenuePeriods || []).map((p) => ({
+      period: String(p.period || ""),
+      amount: Number(p.amount || 0),
+    }));
+    if (!rows.length) {
+      hide();
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const { pad, h, max, step, barW } = chartLayout(canvas, rows);
+    if (my < pad.t || my > pad.t + h) {
+      hide();
+      return;
+    }
+    const idx = Math.floor((mx - pad.l) / step);
+    if (idx < 0 || idx >= rows.length) {
+      hide();
+      return;
+    }
+    const x = pad.l + step * idx + (step - barW) / 2;
+    if (mx < x - 4 || mx > x + barW + 4) {
+      hide();
+      return;
+    }
+
+    const row = rows[idx];
+    const bh = (row.amount / max) * h;
+    tip.textContent = `${row.period} · ${money(row.amount)}`;
+    tip.style.left = `${x + barW / 2}px`;
+    tip.style.top = `${pad.t + h - bh}px`;
+    tip.hidden = false;
+  });
+
+  canvas.addEventListener("mouseleave", hide);
+}
+setupChartTooltip();
 
 document.getElementById("btn-dash-reload")?.addEventListener("click", loadDashboard);
 document.getElementById("revenue-group")?.addEventListener("click", (e) => {
